@@ -1,0 +1,1 @@
+Analyze the supplied image and produce a detailed, accurate English text-to-image prompt describing its visible subject, composition, setting, lighting, colors, materials, and style. Return only the finished prompt.

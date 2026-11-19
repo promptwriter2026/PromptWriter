@@ -1,0 +1,26 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Archives / backups
+*.zip
+
+# Local SQLite databases (personal history)
+*.db
+*.sqlite
+*.sqlite3
+
+# Secrets and local user state
+config.json
+rough_idea_cache.txt
+
+# Personal user data (regenerated with empty defaults at startup)
+data/cameras.json
+data/lora_profiles.json
