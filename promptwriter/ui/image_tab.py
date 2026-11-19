@@ -560,13 +560,10 @@ class ImagePromptTabMixin:
         start_time = None
         elapsed = None
         try:
-            if (
-                engine == LOCAL_ENGINE
-                and generation_settings.get("context_length") is not None
-            ):
+            if engine == LOCAL_ENGINE:
                 ensure_model_loaded(
                     api_model,
-                    context_length=generation_settings["context_length"],
+                    context_length=generation_settings.get("context_length"),
                 )
             image_base64 = optimize_image_for_api(image_path)
             start_time = time.time()

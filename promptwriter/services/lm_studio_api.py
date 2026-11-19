@@ -50,10 +50,13 @@ def _unload_model_instances(instances, base_url=None):
 
 
 def ensure_model_loaded(model_key, context_length=None, base_url=None):
-    """Load a model, reloading when its active context length differs.
+    """Free other loaded models, then prepare the target model.
 
-    Returns True when a load request was sent, or False when an existing
-    instance already satisfies the request.
+    Other models' instances are always unloaded. The target is loaded or
+    reloaded only when an explicit context length is required; with Auto the
+    target is reused if present or left for JIT loading.
+
+    Returns True when a target load request was sent.
     """
     if not isinstance(model_key, str) or not model_key.strip():
         raise ValueError("A model key is required to check an LM Studio model.")
@@ -82,7 +85,18 @@ def ensure_model_loaded(model_key, context_length=None, base_url=None):
         raise ValueError("LM Studio returned invalid loaded model instances.")
     load_key = model.get("key") or model_key
 
+    for entry in response_data["models"]:
+        if entry is model or not isinstance(entry, dict):
+            continue
+        other_instances = entry.get("loaded_instances", [])
+        if not isinstance(other_instances, list):
+            raise ValueError("LM Studio returned invalid loaded model instances.")
+        if other_instances:
+            _unload_model_instances(other_instances, base_url=base_url)
+
     if not instances:
+        if context_length is None:
+            return False
         load_model(load_key, context_length=context_length, base_url=base_url)
         return True
 

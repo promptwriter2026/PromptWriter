@@ -225,6 +225,7 @@ def format_profile_summary(engine, profile, has_saved, temperature=None):
         repeat_penalty = profile.get("repeat_penalty")
         if repeat_penalty is not None:
             parts.append(f"Repeat: {repeat_penalty:g}")
-        if profile.get("disable_thinking"):
-            parts.append("No-Think")
+        parts.append(
+            "Think: Off" if profile.get("disable_thinking") else "Think: On"
+        )
     return " · ".join(parts)

@@ -671,6 +671,12 @@ class ProfileStoreTests(unittest.TestCase):
         self.assertIn("Max: 2048", summary)
         self.assertIn("Top-P: 0.95", summary)
         self.assertIn("Min-P: 0.05", summary)
+        self.assertTrue(summary.endswith("Think: On"))
+        saved["disable_thinking"] = True
+        summary = profile_store.format_profile_summary(
+            LOCAL_ENGINE, saved, True, temperature=0.55
+        )
+        self.assertTrue(summary.endswith("Think: Off"))
 
 
 class ProfileInjectionTests(unittest.TestCase):
@@ -876,7 +882,7 @@ class EnsureModelLoadedTests(unittest.TestCase):
             {"model": "local-model", "context_length": 4096},
         )
 
-    def test_matches_display_name_and_omits_context_for_auto(self):
+    def test_matches_display_name_and_leaves_auto_model_for_jit_loading(self):
         models = FakeResponse(
             {
                 "models": [
@@ -890,14 +896,73 @@ class EnsureModelLoadedTests(unittest.TestCase):
         )
         with patch.object(
             lm_studio_api.requests, "get", return_value=models
+        ), patch.object(lm_studio_api.requests, "post") as post:
+            loaded = lm_studio_api.ensure_model_loaded(
+                "local-model", context_length=None, base_url="http://host:1234"
+            )
+        self.assertFalse(loaded)
+        post.assert_not_called()
+
+    def test_unloads_different_model_when_context_length_is_auto(self):
+        models = FakeResponse(
+            {
+                "models": [
+                    {
+                        "key": "local-model",
+                        "display_name": "Local Model",
+                        "loaded_instances": [],
+                    },
+                    {
+                        "key": "other-model",
+                        "display_name": "Other Model",
+                        "loaded_instances": [{"id": "other-1"}],
+                    },
+                ]
+            }
+        )
+        with patch.object(
+            lm_studio_api.requests, "get", return_value=models
         ), patch.object(
             lm_studio_api.requests, "post", return_value=FakeResponse({})
         ) as post:
             loaded = lm_studio_api.ensure_model_loaded(
                 "local-model", context_length=None, base_url="http://host:1234"
             )
-        self.assertTrue(loaded)
-        self.assertEqual(post.call_args.kwargs["json"], {"model": "vendor/model"})
+        self.assertFalse(loaded)
+        self.assertEqual(len(post.call_args_list), 1)
+        self.assertEqual(
+            post.call_args.args[0], "http://host:1234/api/v1/models/unload"
+        )
+        self.assertEqual(post.call_args.kwargs["json"], {"instance_id": "other-1"})
+
+    def test_keeps_target_instance_loaded_when_context_length_is_auto(self):
+        models = FakeResponse(
+            {
+                "models": [
+                    {
+                        "key": "local-model",
+                        "display_name": "Local Model",
+                        "loaded_instances": [{"id": "target-1"}],
+                    },
+                    {
+                        "key": "other-model",
+                        "display_name": "Other Model",
+                        "loaded_instances": [{"id": "other-1"}],
+                    },
+                ]
+            }
+        )
+        with patch.object(
+            lm_studio_api.requests, "get", return_value=models
+        ), patch.object(
+            lm_studio_api.requests, "post", return_value=FakeResponse({})
+        ) as post:
+            loaded = lm_studio_api.ensure_model_loaded(
+                "local-model", context_length=None, base_url="http://host:1234"
+            )
+        self.assertFalse(loaded)
+        self.assertEqual(len(post.call_args_list), 1)
+        self.assertEqual(post.call_args.kwargs["json"], {"instance_id": "other-1"})
 
     def test_load_errors_are_not_swallowed(self):
         models = FakeResponse(
