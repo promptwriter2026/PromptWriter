@@ -521,8 +521,18 @@ class ImagePromptTabMixin:
         self.image_output_text.configure(state="normal")
         self.image_output_text.delete("1.0", "end")
         self.image_output_text.configure(state="disabled")
+        free_external_vram_first = (
+            engine == LOCAL_ENGINE and self._preflight_local_vram()
+        )
         self.generate_image_prompt_button.configure(state="disabled")
-        self.image_status_label.configure(text="Generating...", text_color="gray")
+        self.image_status_label.configure(
+            text=(
+                "Unloading ComfyUI / Forge Neo VRAM..."
+                if free_external_vram_first
+                else "Generating..."
+            ),
+            text_color="gray",
+        )
         self.image_time_label.configure(text="Generating...", text_color="gray")
         self._update_quota_label(self.image_quota_label, engine, None)
         threading.Thread(
@@ -539,6 +549,7 @@ class ImagePromptTabMixin:
                 rough_idea,
                 generation_settings,
                 force_single_line,
+                free_external_vram_first,
             ),
             daemon=True,
         ).start()
@@ -556,10 +567,13 @@ class ImagePromptTabMixin:
         rough_idea,
         generation_settings,
         force_single_line,
+        free_external_vram_first=False,
     ):
         start_time = None
         elapsed = None
         try:
+            if engine == LOCAL_ENGINE and free_external_vram_first:
+                self._free_external_vram_in_worker("image")
             if engine == LOCAL_ENGINE:
                 ensure_model_loaded(
                     api_model,

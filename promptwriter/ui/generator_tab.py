@@ -451,8 +451,18 @@ class GeneratorTabMixin:
             self.status_label.configure(text=f"Error: {error}", text_color="red")
             return
 
+        free_external_vram_first = (
+            engine == LOCAL_ENGINE and self._preflight_local_vram()
+        )
         self.generate_button.configure(state="disabled")
-        self.status_label.configure(text="Generating...", text_color="gray")
+        self.status_label.configure(
+            text=(
+                "Unloading ComfyUI / Forge Neo VRAM..."
+                if free_external_vram_first
+                else "Generating..."
+            ),
+            text_color="gray",
+        )
         self.time_label.configure(text="Generating...", text_color="gray")
         self._update_quota_label(self.quota_label, engine, None)
         threading.Thread(
@@ -465,6 +475,7 @@ class GeneratorTabMixin:
                 user_idea,
                 generation_settings,
                 force_single_line,
+                free_external_vram_first,
             ),
             daemon=True,
         ).start()
@@ -478,10 +489,13 @@ class GeneratorTabMixin:
         user_idea,
         generation_settings,
         force_single_line,
+        free_external_vram_first=False,
     ):
         start_time = None
         elapsed = None
         try:
+            if engine == LOCAL_ENGINE and free_external_vram_first:
+                self._free_external_vram_in_worker("generator")
             if engine == LOCAL_ENGINE:
                 ensure_model_loaded(
                     api_model,

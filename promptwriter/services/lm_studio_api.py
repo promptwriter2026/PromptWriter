@@ -7,9 +7,9 @@ def _base_url(base_url=None):
     return (base_url or get_lm_studio_base_url()).rstrip("/")
 
 
-def get_lm_studio_loaded_models(base_url=None):
+def get_lm_studio_loaded_models(base_url=None, timeout=5):
     response = requests.get(
-        f"{_base_url(base_url)}/api/v1/models", timeout=5
+        f"{_base_url(base_url)}/api/v1/models", timeout=timeout
     )
     response.raise_for_status()
     response_data = response.json()

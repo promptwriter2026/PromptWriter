@@ -4,12 +4,19 @@ import re
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import requests
 
 from promptwriter.config import LOCAL_ENGINE
-from promptwriter.services import llm_client, lm_studio_api, model_catalog
+from promptwriter.services import (
+    llm_client,
+    lm_studio_api,
+    model_catalog,
+    vram_cleanup_api,
+    vram_monitor,
+)
 from promptwriter.storage import profile_store
 from promptwriter.services.prompt_builder import (
     VISION_DEFAULT_USER_PROMPT,
@@ -988,6 +995,243 @@ class EnsureModelLoadedTests(unittest.TestCase):
                     "local-model",
                     context_length=4096,
                     base_url="http://host:1234",
+                )
+
+
+class VRAMMonitorTests(unittest.TestCase):
+    def setUp(self):
+        vram_monitor.shutdown_nvml()
+
+    def tearDown(self):
+        vram_monitor.shutdown_nvml()
+
+    def test_format_vram_usage(self):
+        memory = {"used_gb": 8.04, "total_gb": 16.0, "percent": 50.2}
+        self.assertEqual(
+            vram_monitor.format_vram_usage(memory), "VRAM: 8.0 / 16.0 GB (50%)"
+        )
+
+    def test_format_falls_back_to_na(self):
+        for memory in (None, {}, {"used_gb": "bad"}):
+            with self.subTest(memory=memory):
+                self.assertEqual(
+                    vram_monitor.format_vram_usage(memory), "VRAM: N/A"
+                )
+
+    def test_color_thresholds(self):
+        cases = {
+            0: vram_monitor.VRAM_COLOR_GREEN,
+            69.9: vram_monitor.VRAM_COLOR_GREEN,
+            70: vram_monitor.VRAM_COLOR_ORANGE,
+            85: vram_monitor.VRAM_COLOR_ORANGE,
+            85.1: vram_monitor.VRAM_COLOR_RED,
+            99.9: vram_monitor.VRAM_COLOR_RED,
+        }
+        for percent, expected in cases.items():
+            with self.subTest(percent=percent):
+                self.assertEqual(vram_monitor.vram_usage_color(percent), expected)
+        self.assertEqual(
+            vram_monitor.vram_usage_color(None),
+            vram_monitor.VRAM_COLOR_NEUTRAL,
+        )
+
+    def test_returns_none_when_nvml_module_is_unavailable(self):
+        with patch.object(vram_monitor, "pynvml", None):
+            self.assertIsNone(vram_monitor.get_gpu_memory_usage())
+
+    def test_returns_none_when_nvml_init_fails(self):
+        fake_pynvml = Mock()
+        fake_pynvml.nvmlInit.side_effect = RuntimeError("no driver")
+        with patch.object(vram_monitor, "pynvml", fake_pynvml):
+            self.assertIsNone(vram_monitor.get_gpu_memory_usage())
+            self.assertIsNone(vram_monitor.get_gpu_memory_usage())
+        fake_pynvml.nvmlInit.assert_called_once()
+
+    def test_returns_none_when_device_query_fails(self):
+        fake_pynvml = Mock()
+        fake_pynvml.nvmlDeviceGetHandleByIndex.side_effect = RuntimeError("gone")
+        with patch.object(vram_monitor, "pynvml", fake_pynvml):
+            self.assertIsNone(vram_monitor.get_gpu_memory_usage())
+
+    def test_reads_device_zero_memory(self):
+        total = 16 * vram_monitor.BYTES_PER_GB
+        used = 8 * vram_monitor.BYTES_PER_GB
+        fake_pynvml = Mock()
+        fake_pynvml.nvmlDeviceGetMemoryInfo.return_value = SimpleNamespace(
+            total=total, used=used
+        )
+        with patch.object(vram_monitor, "pynvml", fake_pynvml):
+            memory = vram_monitor.get_gpu_memory_usage()
+        fake_pynvml.nvmlDeviceGetHandleByIndex.assert_called_once_with(0)
+        self.assertAlmostEqual(memory["used_gb"], 8.0)
+        self.assertAlmostEqual(memory["total_gb"], 16.0)
+        self.assertAlmostEqual(memory["percent"], 50.0)
+        self.assertEqual(
+            vram_monitor.format_vram_usage(memory), "VRAM: 8.0 / 16.0 GB (50%)"
+        )
+
+    def test_init_runs_once_and_shutdown_is_clean(self):
+        fake_pynvml = Mock()
+        fake_pynvml.nvmlDeviceGetMemoryInfo.return_value = SimpleNamespace(
+            total=100, used=10
+        )
+        with patch.object(vram_monitor, "pynvml", fake_pynvml):
+            vram_monitor.get_gpu_memory_usage()
+            vram_monitor.get_gpu_memory_usage()
+            fake_pynvml.nvmlInit.assert_called_once()
+            vram_monitor.shutdown_nvml()
+            fake_pynvml.nvmlShutdown.assert_called_once()
+
+
+class VramCleanupApiTests(unittest.TestCase):
+    def test_free_comfyui_vram_payload_and_timeout(self):
+        with patch.object(
+            vram_cleanup_api.requests, "post", return_value=FakeResponse({})
+        ) as post:
+            vram_cleanup_api.free_comfyui_vram("http://comfy:8188/")
+        self.assertEqual(post.call_args.args[0], "http://comfy:8188/free")
+        self.assertEqual(
+            post.call_args.kwargs["json"],
+            {"unload_models": True, "free_memory": True},
+        )
+        self.assertEqual(post.call_args.kwargs["timeout"], 1.5)
+
+    def test_free_forge_vram_payload_and_timeout(self):
+        with patch.object(
+            vram_cleanup_api.requests, "post", return_value=FakeResponse({})
+        ) as post:
+            vram_cleanup_api.free_forge_vram("http://forge:7860")
+        self.assertEqual(
+            post.call_args.args[0],
+            "http://forge:7860/sdapi/v1/unload-checkpoint",
+        )
+        self.assertEqual(post.call_args.kwargs["json"], {})
+        self.assertEqual(post.call_args.kwargs["timeout"], 1.5)
+
+    def test_free_functions_raise_on_http_error(self):
+        for free_func in (
+            vram_cleanup_api.free_comfyui_vram,
+            vram_cleanup_api.free_forge_vram,
+        ):
+            with self.subTest(free_func=free_func.__name__):
+                with patch.object(
+                    vram_cleanup_api.requests,
+                    "post",
+                    return_value=FakeResponse({}, status_code=500),
+                ):
+                    with self.assertRaises(requests.exceptions.HTTPError):
+                        free_func("http://host:1")
+
+    def test_free_external_vram_reports_successful_backends(self):
+        with patch.object(
+            vram_cleanup_api.requests, "post", return_value=FakeResponse({})
+        ) as post:
+            freed = vram_cleanup_api.free_external_vram(
+                "http://comfy:8188", "http://forge:7860", timeout=2.0
+            )
+        self.assertEqual(freed, ["ComfyUI", "Forge Neo"])
+        self.assertEqual(len(post.call_args_list), 2)
+        for call in post.call_args_list:
+            self.assertEqual(call.kwargs["timeout"], 2.0)
+
+    def test_free_external_vram_skips_blank_urls(self):
+        with patch.object(
+            vram_cleanup_api.requests, "post", return_value=FakeResponse({})
+        ) as post:
+            freed = vram_cleanup_api.free_external_vram("", "   ")
+        self.assertEqual(freed, [])
+        post.assert_not_called()
+
+    def test_free_external_vram_tolerates_connection_errors(self):
+        with patch.object(
+            vram_cleanup_api.requests,
+            "post",
+            side_effect=requests.exceptions.ConnectionError("refused"),
+        ):
+            freed = vram_cleanup_api.free_external_vram(
+                "http://comfy:8188", "http://forge:7860"
+            )
+        self.assertEqual(freed, [])
+
+    def test_free_external_vram_keeps_partial_success(self):
+        def post(url, **kwargs):
+            if url.startswith("http://comfy"):
+                raise requests.exceptions.Timeout("slow")
+            return FakeResponse({})
+
+        with patch.object(vram_cleanup_api.requests, "post", side_effect=post):
+            freed = vram_cleanup_api.free_external_vram(
+                "http://comfy:8188", "http://forge:7860"
+            )
+        self.assertEqual(freed, ["Forge Neo"])
+
+    def test_free_external_vram_uses_configured_urls(self):
+        with patch.object(
+            vram_cleanup_api,
+            "get_comfyui_base_url",
+            return_value="http://comfy:9000",
+        ), patch.object(
+            vram_cleanup_api, "get_forge_base_url", return_value=""
+        ), patch.object(
+            vram_cleanup_api.requests, "post", return_value=FakeResponse({})
+        ) as post:
+            freed = vram_cleanup_api.free_external_vram_from_config()
+        self.assertEqual(freed, ["ComfyUI"])
+        self.assertEqual(post.call_args.args[0], "http://comfy:9000/free")
+
+    def test_config_url_helpers_use_defaults_and_trim(self):
+        from promptwriter.storage import config_store
+
+        self.assertEqual(
+            config_store.get_comfyui_base_url({}), "http://127.0.0.1:8188"
+        )
+        self.assertEqual(
+            config_store.get_forge_base_url({}), "http://127.0.0.1:7860"
+        )
+        config = {
+            "comfyui_base_url": " http://comfy:9000/ ",
+            "forge_base_url": "   ",
+        }
+        self.assertEqual(
+            config_store.get_comfyui_base_url(config), "http://comfy:9000"
+        )
+        self.assertEqual(
+            config_store.get_forge_base_url(config), "http://127.0.0.1:7860"
+        )
+
+
+class VramPreflightConditionTests(unittest.TestCase):
+    def test_prompts_only_when_high_vram_and_no_loaded_model(self):
+        memory = {"used_gb": 13.0, "total_gb": 16.0, "percent": 81.0}
+        self.assertTrue(
+            vram_cleanup_api.should_prompt_vram_unload(memory, [])
+        )
+        self.assertFalse(
+            vram_cleanup_api.should_prompt_vram_unload(
+                memory, [("Model", "instance-1")]
+            )
+        )
+        self.assertFalse(
+            vram_cleanup_api.should_prompt_vram_unload(memory, None)
+        )
+
+    def test_skips_at_or_below_threshold(self):
+        for percent in (0.0, 50.0, 75.0):
+            with self.subTest(percent=percent):
+                memory = {
+                    "used_gb": 12.0,
+                    "total_gb": 16.0,
+                    "percent": percent,
+                }
+                self.assertFalse(
+                    vram_cleanup_api.should_prompt_vram_unload(memory, [])
+                )
+
+    def test_skips_when_vram_is_unavailable(self):
+        for memory in (None, {}, {"percent": "high"}):
+            with self.subTest(memory=memory):
+                self.assertFalse(
+                    vram_cleanup_api.should_prompt_vram_unload(memory, [])
                 )
 
 

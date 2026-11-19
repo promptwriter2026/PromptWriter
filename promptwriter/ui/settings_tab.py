@@ -6,6 +6,8 @@ import customtkinter as ctk
 
 from promptwriter.config import (
     CAMERAS_PATH,
+    DEFAULT_COMFYUI_BASE_URL,
+    DEFAULT_FORGE_BASE_URL,
     DEFAULT_GEMINI_MODEL,
     DEFAULT_LM_STUDIO_BASE_URL,
     LLM_ENGINES,
@@ -65,21 +67,44 @@ class SettingsTabMixin:
             "Address of the LM Studio server, for example http://127.0.0.1:1234.",
         )
 
+        ctk.CTkLabel(tab, text="ComfyUI base URL (VRAM unload)").grid(
+            row=4, column=0, padx=12, pady=(0, 4), sticky="w"
+        )
+        self.comfyui_url_entry = ctk.CTkEntry(tab)
+        self.comfyui_url_entry.grid(
+            row=5, column=0, padx=12, pady=(0, 8), sticky="ew"
+        )
+        self._add_tooltip(
+            self.comfyui_url_entry,
+            "Address of the ComfyUI server, for example http://127.0.0.1:8188.",
+        )
+        ctk.CTkLabel(tab, text="Forge Neo base URL (VRAM unload)").grid(
+            row=4, column=1, padx=12, pady=(0, 4), sticky="w"
+        )
+        self.forge_url_entry = ctk.CTkEntry(tab)
+        self.forge_url_entry.grid(
+            row=5, column=1, padx=12, pady=(0, 8), sticky="ew"
+        )
+        self._add_tooltip(
+            self.forge_url_entry,
+            "Address of the Forge Neo server, for example http://127.0.0.1:7860.",
+        )
+
         self.save_settings_button = ctk.CTkButton(
             tab, text="Save Settings", command=self._save_settings
         )
         self.save_settings_button.grid(
-            row=4, column=0, columnspan=2, padx=12, pady=(0, 12), sticky="ew"
+            row=6, column=0, columnspan=2, padx=12, pady=(0, 12), sticky="ew"
         )
         self._add_tooltip(
             self.save_settings_button, "Save your API keys and configuration."
         )
         ctk.CTkLabel(tab, text="Saved model profiles").grid(
-            row=5, column=0, columnspan=2, padx=12, pady=(0, 4), sticky="w"
+            row=7, column=0, columnspan=2, padx=12, pady=(0, 4), sticky="w"
         )
         profiles_frame = ctk.CTkFrame(tab, fg_color="transparent")
         profiles_frame.grid(
-            row=6, column=0, columnspan=2, padx=12, pady=(0, 8), sticky="ew"
+            row=8, column=0, columnspan=2, padx=12, pady=(0, 8), sticky="ew"
         )
         profiles_frame.grid_columnconfigure(0, weight=1)
         self.saved_profiles_count = ctk.CTkLabel(
@@ -115,16 +140,16 @@ class SettingsTabMixin:
         )
         self.settings_status = ctk.CTkLabel(tab, text="")
         self.settings_status.grid(
-            row=13, column=0, columnspan=2, padx=12, pady=(0, 12), sticky="e"
+            row=15, column=0, columnspan=2, padx=12, pady=(0, 12), sticky="e"
         )
         self._refresh_saved_profiles()
 
         ctk.CTkLabel(tab, text="Add a camera / lens").grid(
-            row=7, column=0, padx=12, pady=(12, 4), sticky="w"
+            row=9, column=0, padx=12, pady=(12, 4), sticky="w"
         )
         self.camera_entry = ctk.CTkEntry(tab, placeholder_text="Camera and lens")
         self.camera_entry.grid(
-            row=8, column=0, padx=12, pady=(0, 8), sticky="ew"
+            row=10, column=0, padx=12, pady=(0, 8), sticky="ew"
         )
         self._add_tooltip(
             self.camera_entry,
@@ -134,7 +159,7 @@ class SettingsTabMixin:
             tab, text="Add Camera", command=self._add_camera
         )
         self.add_camera_button.grid(
-            row=8, column=1, padx=12, pady=(0, 8), sticky="ew"
+            row=10, column=1, padx=12, pady=(0, 8), sticky="ew"
         )
         self._add_tooltip(
             self.add_camera_button,
@@ -142,7 +167,7 @@ class SettingsTabMixin:
         )
 
         ctk.CTkLabel(tab, text="Text System Prompts").grid(
-            row=9, column=0, padx=12, pady=(12, 4), sticky="w"
+            row=11, column=0, padx=12, pady=(12, 4), sticky="w"
         )
         self.prompt_name_menu = ctk.CTkComboBox(
             tab,
@@ -150,7 +175,7 @@ class SettingsTabMixin:
             command=self.load_selected_text_prompt,
         )
         self.prompt_name_menu.grid(
-            row=10, column=0, padx=12, pady=(0, 8), sticky="new"
+            row=12, column=0, padx=12, pady=(0, 8), sticky="new"
         )
         self._add_tooltip(
             self.prompt_name_menu,
@@ -158,7 +183,7 @@ class SettingsTabMixin:
         )
         self.prompt_editor = ctk.CTkTextbox(tab, wrap="word")
         self.prompt_editor.grid(
-            row=11, column=0, columnspan=2, padx=12, pady=(0, 8), sticky="nsew"
+            row=13, column=0, columnspan=2, padx=12, pady=(0, 8), sticky="nsew"
         )
         self._add_tooltip(
             self.prompt_editor,
@@ -170,11 +195,11 @@ class SettingsTabMixin:
         self.prompt_editor._textbox.bind(
             "<<SelectAll>>", self._select_all_text
         )
-        tab.grid_rowconfigure(11, weight=1)
+        tab.grid_rowconfigure(13, weight=1)
 
         prompt_actions = ctk.CTkFrame(tab, fg_color="transparent")
         prompt_actions.grid(
-            row=12, column=0, columnspan=2, padx=12, pady=(0, 12), sticky="ew"
+            row=14, column=0, columnspan=2, padx=12, pady=(0, 12), sticky="ew"
         )
         prompt_actions.grid_columnconfigure((0, 1, 2), weight=1)
         self.delete_prompt_button = ctk.CTkButton(
@@ -199,7 +224,7 @@ class SettingsTabMixin:
         )
 
         ctk.CTkLabel(tab, text="Vision System Prompts").grid(
-            row=14, column=0, padx=12, pady=(12, 4), sticky="w"
+            row=16, column=0, padx=12, pady=(12, 4), sticky="w"
         )
         self.vision_prompt_name_menu = ctk.CTkComboBox(
             tab,
@@ -207,7 +232,7 @@ class SettingsTabMixin:
             command=self.load_selected_vision_prompt,
         )
         self.vision_prompt_name_menu.grid(
-            row=15, column=0, padx=12, pady=(0, 8), sticky="new"
+            row=17, column=0, padx=12, pady=(0, 8), sticky="new"
         )
         self._add_tooltip(
             self.vision_prompt_name_menu,
@@ -215,7 +240,7 @@ class SettingsTabMixin:
         )
         self.vision_prompt_editor = ctk.CTkTextbox(tab, wrap="word")
         self.vision_prompt_editor.grid(
-            row=16, column=0, columnspan=2, padx=12, pady=(0, 8), sticky="nsew"
+            row=18, column=0, columnspan=2, padx=12, pady=(0, 8), sticky="nsew"
         )
         self._add_tooltip(
             self.vision_prompt_editor,
@@ -227,11 +252,11 @@ class SettingsTabMixin:
         self.vision_prompt_editor._textbox.bind(
             "<<SelectAll>>", self._select_all_text
         )
-        tab.grid_rowconfigure(16, weight=1)
+        tab.grid_rowconfigure(18, weight=1)
 
         vision_prompt_actions = ctk.CTkFrame(tab, fg_color="transparent")
         vision_prompt_actions.grid(
-            row=17, column=0, columnspan=2, padx=12, pady=(0, 12), sticky="ew"
+            row=19, column=0, columnspan=2, padx=12, pady=(0, 12), sticky="ew"
         )
         vision_prompt_actions.grid_columnconfigure((0, 1, 2), weight=1)
         self.delete_vision_prompt_button = ctk.CTkButton(
@@ -260,7 +285,7 @@ class SettingsTabMixin:
         )
 
         ctk.CTkLabel(tab, text="Character / LoRA Management").grid(
-            row=19, column=0, columnspan=2, padx=12, pady=(16, 4), sticky="w"
+            row=21, column=0, columnspan=2, padx=12, pady=(16, 4), sticky="w"
         )
         self.lora_name_menu = ctk.CTkComboBox(
             tab,
@@ -272,7 +297,7 @@ class SettingsTabMixin:
             command=self._load_lora_profile,
         )
         self.lora_name_menu.grid(
-            row=20, column=0, columnspan=2, padx=12, pady=(0, 8), sticky="ew"
+            row=22, column=0, columnspan=2, padx=12, pady=(0, 8), sticky="ew"
         )
         self._add_tooltip(
             self.lora_name_menu,
@@ -283,24 +308,24 @@ class SettingsTabMixin:
             lambda event: self._load_lora_profile(self.lora_name_menu.get()),
         )
         ctk.CTkLabel(tab, text="Trigger Words").grid(
-            row=21, column=0, padx=12, pady=(4, 4), sticky="w"
+            row=23, column=0, padx=12, pady=(4, 4), sticky="w"
         )
         self.lora_trigger_entry = ctk.CTkEntry(
             tab, placeholder_text="Exact trigger words"
         )
         self.lora_trigger_entry.grid(
-            row=22, column=0, padx=12, pady=(0, 8), sticky="ew"
+            row=24, column=0, padx=12, pady=(0, 8), sticky="ew"
         )
         self._add_tooltip(
             self.lora_trigger_entry,
             "Manage your character profiles to override default AI generation styles.",
         )
         ctk.CTkLabel(tab, text="Character Profile / Description").grid(
-            row=21, column=1, padx=12, pady=(4, 4), sticky="w"
+            row=23, column=1, padx=12, pady=(4, 4), sticky="w"
         )
         self.lora_description_text = ctk.CTkTextbox(tab, wrap="word", height=110)
         self.lora_description_text.grid(
-            row=22, column=1, rowspan=2, padx=12, pady=(0, 8), sticky="nsew"
+            row=24, column=1, rowspan=2, padx=12, pady=(0, 8), sticky="nsew"
         )
         self._add_tooltip(
             self.lora_description_text,
@@ -314,7 +339,7 @@ class SettingsTabMixin:
         )
         lora_actions = ctk.CTkFrame(tab, fg_color="transparent")
         lora_actions.grid(
-            row=23, column=0, padx=12, pady=(0, 8), sticky="ew"
+            row=25, column=0, padx=12, pady=(0, 8), sticky="ew"
         )
         lora_actions.grid_columnconfigure((0, 1), weight=1)
         self.save_lora_button = ctk.CTkButton(
@@ -335,7 +360,7 @@ class SettingsTabMixin:
         )
         self.lora_status = ctk.CTkLabel(tab, text="")
         self.lora_status.grid(
-            row=24, column=0, columnspan=2, padx=12, pady=(0, 12), sticky="e"
+            row=26, column=0, columnspan=2, padx=12, pady=(0, 12), sticky="e"
         )
 
     def _load_lora_profile(self, profile_name):
@@ -459,6 +484,16 @@ class SettingsTabMixin:
         if not isinstance(base_url, str) or not base_url.strip():
             base_url = DEFAULT_LM_STUDIO_BASE_URL
         self.lm_studio_url_entry.insert(0, base_url.strip())
+        comfyui_url = self.config_data.get(
+            "comfyui_base_url", DEFAULT_COMFYUI_BASE_URL
+        )
+        if not isinstance(comfyui_url, str) or not comfyui_url.strip():
+            comfyui_url = DEFAULT_COMFYUI_BASE_URL
+        self.comfyui_url_entry.insert(0, comfyui_url.strip())
+        forge_url = self.config_data.get("forge_base_url", DEFAULT_FORGE_BASE_URL)
+        if not isinstance(forge_url, str) or not forge_url.strip():
+            forge_url = DEFAULT_FORGE_BASE_URL
+        self.forge_url_entry.insert(0, forge_url.strip())
         self._refresh_saved_profiles()
         legacy_engine = self.config_data.get("engine", "Gemini")
         if legacy_engine not in LLM_ENGINES:
@@ -540,10 +575,16 @@ class SettingsTabMixin:
         base_url = self.lm_studio_url_entry.get().strip()
         if not base_url:
             base_url = DEFAULT_LM_STUDIO_BASE_URL
+        comfyui_url = (
+            self.comfyui_url_entry.get().strip() or DEFAULT_COMFYUI_BASE_URL
+        )
+        forge_url = self.forge_url_entry.get().strip() or DEFAULT_FORGE_BASE_URL
         self.config_data = {
             "gemini_api_key": self.gemini_key_entry.get().strip(),
             "groq_api_key": self.groq_key_entry.get().strip(),
             "lm_studio_base_url": base_url,
+            "comfyui_base_url": comfyui_url,
+            "forge_base_url": forge_url,
             "engine": generator_engine,
             "selected_api_model": generator_model,
             "selected_api_models": legacy_selected_models,

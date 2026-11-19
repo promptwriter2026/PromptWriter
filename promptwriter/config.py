@@ -19,6 +19,8 @@ DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
 LOCAL_ENGINE = "Local (LM Studio)"
 LLM_ENGINES = ("Gemini", "Groq", LOCAL_ENGINE)
 DEFAULT_LM_STUDIO_BASE_URL = "http://127.0.0.1:1234"
+DEFAULT_COMFYUI_BASE_URL = "http://127.0.0.1:8188"
+DEFAULT_FORGE_BASE_URL = "http://127.0.0.1:7860"
 GEMINI_FALLBACK_MODELS = ["gemini-3.8-flash", "gemini-2.5-flash"]
 GEMINI_EXCLUDED_MODEL_TERMS = (
     "preview",
@@ -44,6 +46,8 @@ DEFAULT_CONFIG = {
     "groq_api_key": "",
     "engine": "Gemini",
     "lm_studio_base_url": DEFAULT_LM_STUDIO_BASE_URL,
+    "comfyui_base_url": DEFAULT_COMFYUI_BASE_URL,
+    "forge_base_url": DEFAULT_FORGE_BASE_URL,
     "selected_api_model": DEFAULT_GEMINI_MODEL,
     "selected_api_models": {
         "Gemini": DEFAULT_GEMINI_MODEL,

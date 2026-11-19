@@ -23,6 +23,7 @@ from promptwriter.ui.profile_ui import ProfileMixin
 from promptwriter.ui.settings_tab import SettingsTabMixin
 from promptwriter.ui.text_actions import TextActionsMixin
 from promptwriter.ui.tooltip import ToolTip
+from promptwriter.ui.vram_ui import VRAMMixin
 
 
 class PromptGeneratorApp(
@@ -33,6 +34,7 @@ class PromptGeneratorApp(
     ModelSelectorMixin,
     ProfileMixin,
     LMStudioMixin,
+    VRAMMixin,
     TextActionsMixin,
     ctk.CTk,
     TkinterDnD.DnDWrapper,
@@ -78,6 +80,7 @@ class PromptGeneratorApp(
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
         self._build_layout()
+        self._build_vram_indicator()
         self._load_rough_idea()
         self._refresh_generator_options()
         self._load_settings()
@@ -90,6 +93,7 @@ class PromptGeneratorApp(
         self._refresh_profile("text", sync_temperature=False)
         self._refresh_profile("vision", sync_temperature=False)
         self.after(200, self._refresh_lm_studio_status)
+        self._start_vram_polling()
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
 
     def _add_tooltip(self, widget, text):
@@ -304,6 +308,7 @@ class PromptGeneratorApp(
 
     def on_closing(self):
         self._closing = True
+        self._stop_vram_polling()
         self._save_rough_idea()
         self.save_ui_state()
         self.destroy()
