@@ -127,6 +127,7 @@ class PayloadTests(unittest.TestCase):
             },
         )
         self.assertEqual(post.call_args.kwargs["json"]["top_p"], 0.2)
+        self.assertNotIn("reasoning_effort", post.call_args.kwargs["json"])
 
     def test_groq_never_receives_local_only_fields(self):
         _, post = self._capture(
@@ -141,7 +142,8 @@ class PayloadTests(unittest.TestCase):
         self.assertNotIn("cache_prompt", payload)
         self.assertNotIn("min_p", payload)
         self.assertNotIn("repeat_penalty", payload)
-        self.assertNotIn("/no_think", payload["messages"][1]["content"])
+        self.assertNotIn("reasoning_effort", payload)
+        self.assertEqual(payload["messages"][1]["content"], "USER")
         self.assertEqual(payload["max_tokens"], 6500)
         self.assertEqual(payload["top_p"], 0.95)
 
@@ -163,9 +165,22 @@ class PayloadTests(unittest.TestCase):
         self.assertEqual(payload["repeat_penalty"], 1.1)
         self.assertEqual(payload["top_p"], 0.5)
         self.assertEqual(payload["max_tokens"], 512)
-        self.assertEqual(payload["messages"][1]["content"], "USER\n/no_think")
+        self.assertEqual(payload["reasoning_effort"], "none")
+        self.assertEqual(payload["messages"][1]["content"], "USER")
 
-    def test_disable_thinking_appends_no_think_to_vision_text_part(self):
+    def test_local_payload_omits_reasoning_effort_when_thinking_enabled(self):
+        _, post = self._capture(
+            LOCAL_ENGINE,
+            chat_response("a prompt"),
+            request_text={"system": "SYS", "user": "USER"},
+            disable_thinking=False,
+            base_url="http://127.0.0.1:1234",
+        )
+        payload = post.call_args.kwargs["json"]
+        self.assertNotIn("reasoning_effort", payload)
+        self.assertEqual(payload["messages"][1]["content"], "USER")
+
+    def test_disable_thinking_sets_reasoning_effort_for_vision(self):
         _, post = self._capture(
             LOCAL_ENGINE,
             chat_response("a prompt"),
@@ -174,10 +189,10 @@ class PayloadTests(unittest.TestCase):
             disable_thinking=True,
             base_url="http://127.0.0.1:1234",
         )
-        content = post.call_args.kwargs["json"]["messages"][1]["content"]
-        self.assertEqual(
-            content[0], {"type": "text", "text": "Describe this\n/no_think"}
-        )
+        payload = post.call_args.kwargs["json"]
+        self.assertEqual(payload["reasoning_effort"], "none")
+        content = payload["messages"][1]["content"]
+        self.assertEqual(content[0], {"type": "text", "text": "Describe this"})
         self.assertEqual(content[1]["type"], "image_url")
 
     def test_gemini_uses_system_instruction(self):
@@ -698,7 +713,8 @@ class ProfileInjectionTests(unittest.TestCase):
         self.assertEqual(payload["repeat_penalty"], 1.1)
         self.assertEqual(payload["max_tokens"], 1024)
         self.assertNotIn("cache_prompt", payload)
-        self.assertTrue(payload["messages"][-1]["content"].endswith("/no_think"))
+        self.assertEqual(payload["reasoning_effort"], "none")
+        self.assertEqual(payload["messages"][-1]["content"], "USER")
 
     def test_groq_profile_omits_local_only_fields(self):
         profile = self._profile(

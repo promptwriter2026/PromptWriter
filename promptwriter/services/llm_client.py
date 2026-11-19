@@ -49,24 +49,6 @@ def _build_chat_messages(system_prompt, user_text, image_base64):
     return messages
 
 
-def _append_no_think(messages):
-    # "/no_think" is a plain-text token: reasoning models honor it and other
-    # models treat it as text. It cannot trigger chat-template HTTP 400s.
-    for message in reversed(messages):
-        if message.get("role") != "user":
-            continue
-        content = message.get("content")
-        if isinstance(content, str):
-            message["content"] = f"{content}\n/no_think".strip()
-        elif isinstance(content, list):
-            for part in content:
-                if isinstance(part, dict) and part.get("type") == "text":
-                    part["text"] = f"{part.get('text', '')}\n/no_think".strip()
-                    break
-        return messages
-    return messages
-
-
 def request_generated_prompt(
     engine,
     api_key,
@@ -140,18 +122,20 @@ def request_generated_prompt(
             "Authorization": "Bearer local-key",
             "Content-Type": "application/json",
         }
-        messages = _build_chat_messages(system_text, user_text, image_base64)
-        if disable_thinking:
-            _append_no_think(messages)
         payload = {
             "model": api_model,
-            "messages": messages,
+            "messages": _build_chat_messages(
+                system_text, user_text, image_base64
+            ),
             "temperature": float(temperature),
             "top_p": float(default_top_p if top_p is None else top_p),
             "max_tokens": int(
                 DEFAULT_LOCAL_MAX_TOKENS if max_tokens is None else max_tokens
             ),
         }
+        if disable_thinking:
+            # LM Studio rejects "off"; "none" is its supported disable value.
+            payload["reasoning_effort"] = "none"
         if min_p is not None:
             payload["min_p"] = float(min_p)
         if repeat_penalty is not None:

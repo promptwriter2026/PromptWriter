@@ -64,7 +64,7 @@ class ModelProfileDialog(ctk.CTkToplevel):
         )
         self.disable_thinking_checkbox = ctk.CTkCheckBox(
             body,
-            text="Disable Thinking (/no_think)",
+            text="Disable Thinking",
             variable=self.disable_thinking_var,
             state="normal" if self._local else "disabled",
         )
