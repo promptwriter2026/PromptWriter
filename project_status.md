@@ -4,7 +4,11 @@
 Build a modular Python desktop application with a CustomTkinter interface that expands rough ideas into detailed English text-to-image prompts using selectable LLM providers and model-specific system instructions.
 
 ## Architecture
-- `main.py`: CustomTkinter application, startup data initialization, and UI.
+- `main.py`: Entry point; runs startup initialization and launches the app.
+- `promptwriter/config.py`: Application paths, engine constants, and defaults.
+- `promptwriter/storage/`: JSON config/app-file seeding and the SQLite history layer.
+- `promptwriter/services/`: LLM client, LM Studio API, model catalog, LoRA rules, prompt assembly, and image preparation.
+- `promptwriter/ui/`: CustomTkinter app split into tab/view mixins plus shared tooltip/text-action helpers.
 - `config.json`: API keys and selected LLM engine.
 - `system_prompts/`: Model-specific instructions, loaded from `.txt` files.
 - `data/cameras.json`: Camera and lens choices.
@@ -98,3 +102,7 @@ Build a modular Python desktop application with a CustomTkinter interface that e
 - The History content panel now uses “Generated Prompts” and “Original Idea” tabs. “Load back to Generator” restores the original idea and switches to Generator.
 - The History list queries only the newest 50 rows, loads prompt bodies only when an entry is selected, formats timestamps and topic snippets, and shows the complete original idea in each button's tooltip.
 - Search, favorites-only filtering, favorite toggling, and favorite export now query/update SQLite.
+
+## Version History
+- 2026-11-19 — v2.0.0: Refactored the monolithic `main.py` (3,661 lines) into the modular `promptwriter` package — `config`, `utils.text`, `storage` (app files, config, SQLite history), `services` (LLM client, LM Studio API, model catalog, LoRA, prompt assembly, image tools), and `ui` (app shell plus seven tab/view mixins). No behavioral or UI changes. Verified all four tabs, both generation pipelines with mocked providers, history reads/search/selection, image preview, and entry-point startup. No changes to config, history database, or user data.
+- 2026-11-19 — v1.0.0: Git baseline before modular refactoring; added the persistent auto-logging rule (`AGENTS.md`, `.qoder/rules/project-rules.md`) and `.gitignore` for caches, virtual environments, backups, databases, and local secrets.
