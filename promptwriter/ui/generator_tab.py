@@ -387,10 +387,6 @@ class GeneratorTabMixin:
             )
             return
 
-        self.output_text.configure(state="normal")
-        self.output_text.delete("1.0", "end")
-        self.output_text.configure(state="disabled")
-
         try:
             request_parts = assemble_text_request(
                 SYSTEM_PROMPTS_DIR / f"{self.model_menu.get()}.txt",
@@ -451,9 +447,16 @@ class GeneratorTabMixin:
             self.status_label.configure(text=f"Error: {error}", text_color="red")
             return
 
-        free_external_vram_first = (
-            engine == LOCAL_ENGINE and self._preflight_local_vram()
-        )
+        free_external_vram_first = False
+        if engine == LOCAL_ENGINE:
+            proceed, free_external_vram_first = (
+                self._local_generation_preflight()
+            )
+            if not proceed:
+                return
+        self.output_text.configure(state="normal")
+        self.output_text.delete("1.0", "end")
+        self.output_text.configure(state="disabled")
         self.generate_button.configure(state="disabled")
         self.status_label.configure(
             text=(

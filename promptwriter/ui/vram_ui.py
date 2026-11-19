@@ -1,13 +1,17 @@
 import time
 import tkinter
-from tkinter import messagebox
 
 import customtkinter as ctk
 import requests
 
 from promptwriter.services.lm_studio_api import get_lm_studio_loaded_models
 from promptwriter.services.vram_cleanup_api import (
+    PREFLIGHT_CANCEL,
+    PREFLIGHT_LOAD_ANYWAY,
+    PREFLIGHT_UNLOAD,
+    VRAM_PREFLIGHT_THRESHOLD,
     free_external_vram_from_config,
+    preflight_flags,
     should_prompt_vram_unload,
 )
 from promptwriter.services.vram_monitor import (
@@ -99,35 +103,117 @@ class VRAMMixin:
             self._vram_after_id = None
         shutdown_nvml()
 
+    def _local_generation_preflight(self):
+        """Return (proceed, free_external_vram) for a Local generation click."""
+        action = self._preflight_local_vram()
+        if action is None:
+            return True, False
+        return preflight_flags(action)
+
     def _preflight_local_vram(self):
-        """Return True when ComfyUI/Forge VRAM should be freed in the worker."""
+        """Ask about external VRAM when needed; return the chosen action or None."""
         memory = get_gpu_memory_usage()
         if not memory:
-            return False
-        if memory["percent"] <= 75.0:
-            return False
+            return None
+        if memory["percent"] <= VRAM_PREFLIGHT_THRESHOLD:
+            return None
         try:
             loaded_models = get_lm_studio_loaded_models(
                 timeout=LM_STUDIO_PREFLIGHT_TIMEOUT
             )
         except (requests.exceptions.RequestException, ValueError):
-            return False
+            return None
         if not should_prompt_vram_unload(memory, loaded_models):
-            return False
-        return bool(
-            messagebox.askyesno(
-                "High VRAM Usage Detected",
-                (
-                    f"VRAM is currently at {memory['percent']:.0f}% "
-                    f"({memory['used_gb']:.1f} / "
-                    f"{memory['total_gb']:.1f} GB), and no local LLM "
-                    "is loaded yet.\n\n"
-                    "Unload ComfyUI / Forge Neo models from VRAM "
-                    "before generating?"
-                ),
-                parent=self,
-            )
+            return None
+        return self._ask_vram_preflight(memory)
+
+    def _ask_vram_preflight(self, memory):
+        result = {"action": PREFLIGHT_CANCEL}
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("High VRAM Usage Detected")
+        dialog.resizable(False, False)
+        dialog.transient(self)
+
+        def choose(action):
+            result["action"] = action
+            try:
+                dialog.grab_release()
+            except tkinter.TclError:
+                pass
+            dialog.destroy()
+
+        dialog.protocol("WM_DELETE_WINDOW", lambda: choose(PREFLIGHT_CANCEL))
+        dialog.bind("<Escape>", lambda event: choose(PREFLIGHT_CANCEL))
+
+        content = ctk.CTkFrame(dialog, fg_color="transparent")
+        content.pack(fill="both", expand=True, padx=20, pady=16)
+        ctk.CTkLabel(
+            content,
+            text=(
+                f"VRAM is currently at {memory['percent']:.0f}% "
+                f"({memory['used_gb']:.1f} / "
+                f"{memory['total_gb']:.1f} GB), and no local LLM "
+                "is loaded yet.\n\n"
+                "Unload ComfyUI / Forge Neo models before generating?"
+            ),
+            justify="left",
+            anchor="w",
+            wraplength=430,
+        ).pack(fill="x")
+        ctk.CTkLabel(
+            content,
+            text="Load Anyway proceeds without unloading external VRAM.",
+            justify="left",
+            anchor="w",
+            wraplength=430,
+            text_color="gray",
+            font=ctk.CTkFont(size=11),
+        ).pack(fill="x", pady=(8, 0))
+
+        buttons = ctk.CTkFrame(content, fg_color="transparent")
+        buttons.pack(fill="x", pady=(18, 0))
+        buttons.grid_columnconfigure((0, 1, 2), weight=1)
+        unload_button = ctk.CTkButton(
+            buttons,
+            text="Unload & Load",
+            width=130,
+            command=lambda: choose(PREFLIGHT_UNLOAD),
         )
+        unload_button.grid(row=0, column=0, padx=(0, 6), sticky="ew")
+        ctk.CTkButton(
+            buttons,
+            text="Load Anyway",
+            width=130,
+            fg_color="gray30",
+            hover_color="gray20",
+            command=lambda: choose(PREFLIGHT_LOAD_ANYWAY),
+        ).grid(row=0, column=1, padx=6, sticky="ew")
+        ctk.CTkButton(
+            buttons,
+            text="Cancel",
+            width=90,
+            fg_color="gray30",
+            hover_color="gray20",
+            command=lambda: choose(PREFLIGHT_CANCEL),
+        ).grid(row=0, column=2, padx=(6, 0), sticky="ew")
+
+        dialog.update_idletasks()
+        x = self.winfo_rootx() + (
+            self.winfo_width() - dialog.winfo_reqwidth()
+        ) // 2
+        y = self.winfo_rooty() + (
+            self.winfo_height() - dialog.winfo_reqheight()
+        ) // 3
+        dialog.geometry(f"+{max(0, x)}+{max(0, y)}")
+        dialog.lift()
+        dialog.focus_force()
+        try:
+            dialog.grab_set()
+        except tkinter.TclError:
+            pass
+        unload_button.focus_set()
+        dialog.wait_window()
+        return result["action"]
 
     def _set_generation_status(self, context, text, color="gray"):
         label = (

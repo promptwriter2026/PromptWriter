@@ -7,9 +7,19 @@ from promptwriter.storage.config_store import (
 
 
 VRAM_CLEANUP_TIMEOUT = 1.5
-VRAM_PREFLIGHT_THRESHOLD = 75.0
+VRAM_PREFLIGHT_THRESHOLD = 50.0
 COMFYUI_BACKEND_NAME = "ComfyUI"
 FORGE_BACKEND_NAME = "Forge Neo"
+
+PREFLIGHT_UNLOAD = "unload"
+PREFLIGHT_LOAD_ANYWAY = "load_anyway"
+PREFLIGHT_CANCEL = "cancel"
+
+_PREFLIGHT_FLAGS = {
+    PREFLIGHT_UNLOAD: (True, True),
+    PREFLIGHT_LOAD_ANYWAY: (True, False),
+    PREFLIGHT_CANCEL: (False, False),
+}
 
 
 def _normalized_base_url(base_url):
@@ -75,3 +85,8 @@ def should_prompt_vram_unload(memory, loaded_models):
     if not isinstance(loaded_models, (list, tuple)):
         return False
     return len(loaded_models) == 0
+
+
+def preflight_flags(action):
+    """Map a dialog action to (proceed_with_generation, free_external_vram)."""
+    return _PREFLIGHT_FLAGS.get(action, (False, False))

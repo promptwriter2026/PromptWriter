@@ -1202,7 +1202,7 @@ class VramCleanupApiTests(unittest.TestCase):
 
 class VramPreflightConditionTests(unittest.TestCase):
     def test_prompts_only_when_high_vram_and_no_loaded_model(self):
-        memory = {"used_gb": 13.0, "total_gb": 16.0, "percent": 81.0}
+        memory = {"used_gb": 9.0, "total_gb": 16.0, "percent": 56.0}
         self.assertTrue(
             vram_cleanup_api.should_prompt_vram_unload(memory, [])
         )
@@ -1215,11 +1215,11 @@ class VramPreflightConditionTests(unittest.TestCase):
             vram_cleanup_api.should_prompt_vram_unload(memory, None)
         )
 
-    def test_skips_at_or_below_threshold(self):
-        for percent in (0.0, 50.0, 75.0):
+    def test_skips_at_or_below_fifty_percent(self):
+        for percent in (0.0, 25.0, 50.0):
             with self.subTest(percent=percent):
                 memory = {
-                    "used_gb": 12.0,
+                    "used_gb": 8.0,
                     "total_gb": 16.0,
                     "percent": percent,
                 }
@@ -1227,12 +1227,39 @@ class VramPreflightConditionTests(unittest.TestCase):
                     vram_cleanup_api.should_prompt_vram_unload(memory, [])
                 )
 
+    def test_prompts_just_above_fifty_percent(self):
+        memory = {"used_gb": 8.1, "total_gb": 16.0, "percent": 50.1}
+        self.assertTrue(vram_cleanup_api.should_prompt_vram_unload(memory, []))
+
     def test_skips_when_vram_is_unavailable(self):
         for memory in (None, {}, {"percent": "high"}):
             with self.subTest(memory=memory):
                 self.assertFalse(
                     vram_cleanup_api.should_prompt_vram_unload(memory, [])
                 )
+
+    def test_dialog_outcomes_map_to_generation_flags(self):
+        self.assertEqual(
+            vram_cleanup_api.preflight_flags(
+                vram_cleanup_api.PREFLIGHT_UNLOAD
+            ),
+            (True, True),
+        )
+        self.assertEqual(
+            vram_cleanup_api.preflight_flags(
+                vram_cleanup_api.PREFLIGHT_LOAD_ANYWAY
+            ),
+            (True, False),
+        )
+        self.assertEqual(
+            vram_cleanup_api.preflight_flags(
+                vram_cleanup_api.PREFLIGHT_CANCEL
+            ),
+            (False, False),
+        )
+        self.assertEqual(
+            vram_cleanup_api.preflight_flags("unknown"), (False, False)
+        )
 
 
 if __name__ == "__main__":
