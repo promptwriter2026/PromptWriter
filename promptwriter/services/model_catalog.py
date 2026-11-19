@@ -4,8 +4,8 @@ from promptwriter.config import (
     GEMINI_EXCLUDED_MODEL_TERMS,
     GEMINI_FALLBACK_MODELS,
     GROQ_EXCLUDED_MODEL_TERMS,
-    LOCAL_SERVER_URL,
 )
+from promptwriter.storage.config_store import get_lm_studio_base_url
 
 
 def filter_gemini_models(models):
@@ -60,7 +60,7 @@ def filter_local_models(model_data):
     return models
 
 
-def fetch_provider_models(engine, api_key):
+def fetch_provider_models(engine, api_key, base_url=None):
     """Return (models, fallback_message); raises on provider errors."""
     if engine == "Gemini":
         from google import genai
@@ -94,7 +94,10 @@ def fetch_provider_models(engine, api_key):
             raise ValueError(f"{engine} returned no available models.")
         return models, None
 
-    response = requests.get(f"{LOCAL_SERVER_URL}/models", timeout=5)
+    response = requests.get(
+        f"{(base_url or get_lm_studio_base_url()).rstrip('/')}/v1/models",
+        timeout=5,
+    )
     response.raise_for_status()
     response_data = response.json()
     if not isinstance(response_data, dict):

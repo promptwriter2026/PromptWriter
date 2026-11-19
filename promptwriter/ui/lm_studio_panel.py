@@ -3,18 +3,20 @@ from urllib.parse import urlparse
 
 import requests
 
-from promptwriter.config import LOCAL_ENGINE, LOCAL_SERVER_ROOT_URL
+from promptwriter.config import LOCAL_ENGINE
 from promptwriter.services.lm_studio_api import (
     get_lm_studio_loaded_models,
     unload_lm_studio_models,
 )
+from promptwriter.storage.config_store import get_lm_studio_base_url
 
 
 def lm_studio_endpoint():
-    parsed = urlparse(LOCAL_SERVER_ROOT_URL)
+    base_url = get_lm_studio_base_url()
+    parsed = urlparse(base_url)
     if parsed.port:
         return f"{parsed.hostname}:{parsed.port}"
-    return parsed.hostname or LOCAL_SERVER_ROOT_URL
+    return parsed.hostname or base_url
 
 
 def describe_lm_studio_error(error):

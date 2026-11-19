@@ -26,7 +26,6 @@ from promptwriter.storage.history_db import insert_generation
 from promptwriter.utils.text import (
     format_as_single_line_prompts,
     is_numeric_result,
-    strip_think_tags,
 )
 
 
@@ -370,7 +369,7 @@ class GeneratorTabMixin:
         self.output_text.configure(state="disabled")
 
         try:
-            request_text = assemble_text_request(
+            request_parts = assemble_text_request(
                 SYSTEM_PROMPTS_DIR / f"{self.model_menu.get()}.txt",
                 self.lora_menu.get(),
                 self.lora_profiles,
@@ -434,7 +433,7 @@ class GeneratorTabMixin:
                 engine,
                 api_key,
                 api_model,
-                request_text,
+                request_parts,
                 user_idea,
                 generation_settings,
                 force_single_line,
@@ -447,7 +446,7 @@ class GeneratorTabMixin:
         engine,
         api_key,
         api_model,
-        request_text,
+        request_parts,
         user_idea,
         generation_settings,
         force_single_line,
@@ -460,7 +459,7 @@ class GeneratorTabMixin:
                 engine,
                 api_key,
                 api_model,
-                request_text,
+                request_parts,
                 include_quota=True,
                 temperature=generation_settings["temperature"],
                 cache_prompt=generation_settings["cache_prompt"],
@@ -471,7 +470,6 @@ class GeneratorTabMixin:
             generated_prompt = enforce_lora_trigger_prefix(
                 generated_prompt, generation_settings.get("trigger_words", "")
             )
-            generated_prompt = strip_think_tags(generated_prompt)
             if not generated_prompt or is_numeric_result(generated_prompt):
                 raise ValueError("The generation result was not prompt text.")
         except requests.exceptions.RequestException as error:

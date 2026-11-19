@@ -29,7 +29,6 @@ from promptwriter.storage.history_db import insert_generation
 from promptwriter.utils.text import (
     format_as_single_line_prompts,
     is_numeric_result,
-    strip_think_tags,
     truncate_filename,
 )
 
@@ -457,7 +456,7 @@ class ImagePromptTabMixin:
             if not api_model or api_model == "Fetch models first":
                 raise ValueError(f"Select an available {engine} API model.")
             rough_idea = self.image_context_text.get("1.0", "end").strip()
-            request_text = assemble_image_request(
+            request_parts = assemble_image_request(
                 VISION_SYSTEM_PROMPTS_DIR
                 / f"{self.image_target_model_menu.get()}.txt",
                 self.image_lora_menu.get(),
@@ -503,7 +502,7 @@ class ImagePromptTabMixin:
                 engine,
                 api_key.strip(),
                 api_model,
-                request_text,
+                request_parts,
                 image_path,
                 trigger_words,
                 temperature,
@@ -521,7 +520,7 @@ class ImagePromptTabMixin:
         engine,
         api_key,
         api_model,
-        request_text,
+        request_parts,
         image_path,
         trigger_words,
         temperature,
@@ -540,7 +539,7 @@ class ImagePromptTabMixin:
                 engine,
                 api_key,
                 api_model,
-                request_text,
+                request_parts,
                 image_base64=image_base64,
                 include_quota=True,
                 temperature=temperature,
@@ -552,7 +551,6 @@ class ImagePromptTabMixin:
             generated_prompt = enforce_lora_trigger_prefix(
                 generated_prompt, trigger_words
             )
-            generated_prompt = strip_think_tags(generated_prompt)
             if not generated_prompt or is_numeric_result(generated_prompt):
                 raise ValueError("The generation result was not prompt text.")
         except requests.exceptions.RequestException as error:

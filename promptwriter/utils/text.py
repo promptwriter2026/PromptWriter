@@ -73,5 +73,25 @@ def is_numeric_result(value):
     )
 
 
+_THINK_BLOCK_PATTERNS = (
+    re.compile(r"<think>.*?</think>", flags=re.IGNORECASE | re.DOTALL),
+    re.compile(r"<thinking>.*?</thinking>", flags=re.IGNORECASE | re.DOTALL),
+    re.compile(r"<\|think\|>.*?<\|/think\|>", flags=re.IGNORECASE | re.DOTALL),
+)
+
+_UNCLOSED_THINK_PATTERNS = (
+    re.compile(r"<think>.*\Z", flags=re.IGNORECASE | re.DOTALL),
+    re.compile(r"<thinking>.*\Z", flags=re.IGNORECASE | re.DOTALL),
+    re.compile(r"<\|think\|>.*\Z", flags=re.IGNORECASE | re.DOTALL),
+)
+
+
 def strip_think_tags(text):
-    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+    if not isinstance(text, str):
+        return text
+    for pattern in _THINK_BLOCK_PATTERNS:
+        text = pattern.sub("", text)
+    for pattern in _UNCLOSED_THINK_PATTERNS:
+        text = pattern.sub("", text)
+    return text.strip()
+

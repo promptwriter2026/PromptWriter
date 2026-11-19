@@ -17,8 +17,7 @@ VISION_BOOTSTRAP_PROMPT_PATH = APP_DIR / "defaults" / "Vision-Default.txt"
 DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
 LOCAL_ENGINE = "Local (LM Studio)"
 LLM_ENGINES = ("Gemini", "Groq", LOCAL_ENGINE)
-LOCAL_SERVER_URL = "http://127.0.0.1:1234/v1"
-LOCAL_SERVER_ROOT_URL = "http://127.0.0.1:1234"
+DEFAULT_LM_STUDIO_BASE_URL = "http://127.0.0.1:1234"
 GEMINI_FALLBACK_MODELS = ["gemini-3.8-flash", "gemini-2.5-flash"]
 GEMINI_EXCLUDED_MODEL_TERMS = (
     "preview",
@@ -43,6 +42,7 @@ DEFAULT_CONFIG = {
     "gemini_api_key": "",
     "groq_api_key": "",
     "engine": "Gemini",
+    "lm_studio_base_url": DEFAULT_LM_STUDIO_BASE_URL,
     "selected_api_model": DEFAULT_GEMINI_MODEL,
     "selected_api_models": {
         "Gemini": DEFAULT_GEMINI_MODEL,
