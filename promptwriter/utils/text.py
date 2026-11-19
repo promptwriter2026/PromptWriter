@@ -77,12 +77,17 @@ _THINK_BLOCK_PATTERNS = (
     re.compile(r"<think>.*?</think>", flags=re.IGNORECASE | re.DOTALL),
     re.compile(r"<thinking>.*?</thinking>", flags=re.IGNORECASE | re.DOTALL),
     re.compile(r"<\|think\|>.*?<\|/think\|>", flags=re.IGNORECASE | re.DOTALL),
+    re.compile(
+        r"<\|channel>\s*thought\b.*?<channel\|>",
+        flags=re.IGNORECASE | re.DOTALL,
+    ),
 )
 
 _UNCLOSED_THINK_PATTERNS = (
     re.compile(r"<think>.*\Z", flags=re.IGNORECASE | re.DOTALL),
     re.compile(r"<thinking>.*\Z", flags=re.IGNORECASE | re.DOTALL),
     re.compile(r"<\|think\|>.*\Z", flags=re.IGNORECASE | re.DOTALL),
+    re.compile(r"<\|channel>\s*thought\b.*\Z", flags=re.IGNORECASE | re.DOTALL),
 )
 
 

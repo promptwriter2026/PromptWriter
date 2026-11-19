@@ -190,6 +190,16 @@ def profile_request_kwargs(engine, profile):
     return kwargs
 
 
+def profile_context_length(engine, profile):
+    """Return the explicit Local context length, or None for Auto/cloud."""
+    if engine != LOCAL_ENGINE:
+        return None
+    context_length = profile.get("context_length")
+    if isinstance(context_length, int) and context_length > 0:
+        return context_length
+    return None
+
+
 def format_profile_summary(engine, profile, has_saved, temperature=None):
     if not has_saved:
         return "Default profile"

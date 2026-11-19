@@ -27,7 +27,10 @@ from promptwriter.services.lora import (
 from promptwriter.services.prompt_builder import assemble_image_request
 from promptwriter.storage.config_store import load_config
 from promptwriter.storage.history_db import insert_generation
-from promptwriter.storage.profile_store import profile_request_kwargs
+from promptwriter.storage.profile_store import (
+    profile_context_length,
+    profile_request_kwargs,
+)
 from promptwriter.utils.text import (
     format_as_single_line_prompts,
     is_numeric_result,
@@ -503,6 +506,9 @@ class ImagePromptTabMixin:
             }
             generation_settings.update(
                 profile_request_kwargs(engine, self.vision_profile)
+            )
+            generation_settings["context_length"] = profile_context_length(
+                engine, self.vision_profile
             )
             temperature = self.vision_temp_var.get()
             generation_settings["temperature"] = temperature

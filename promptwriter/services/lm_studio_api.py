@@ -36,8 +36,25 @@ def get_lm_studio_loaded_models(base_url=None):
     return loaded_models
 
 
+def _unload_model_instances(instances, base_url=None):
+    for instance in instances:
+        instance_id = instance.get("id") if isinstance(instance, dict) else None
+        if not isinstance(instance_id, str) or not instance_id:
+            raise ValueError("LM Studio returned an invalid loaded model instance.")
+        response = requests.post(
+            f"{_base_url(base_url)}/api/v1/models/unload",
+            json={"instance_id": instance_id},
+            timeout=30,
+        )
+        response.raise_for_status()
+
+
 def ensure_model_loaded(model_key, context_length=None, base_url=None):
-    """Load the model when it has no loaded instance; return True if loaded."""
+    """Load a model, reloading when its active context length differs.
+
+    Returns True when a load request was sent, or False when an existing
+    instance already satisfies the request.
+    """
     if not isinstance(model_key, str) or not model_key.strip():
         raise ValueError("A model key is required to check an LM Studio model.")
     model_key = model_key.strip()
@@ -50,20 +67,43 @@ def ensure_model_loaded(model_key, context_length=None, base_url=None):
     ):
         raise ValueError("LM Studio returned an invalid models response.")
 
-    for model in response_data["models"]:
-        if not isinstance(model, dict):
+    model = None
+    for entry in response_data["models"]:
+        if not isinstance(entry, dict):
             continue
-        identifiers = {
-            model.get("key"),
-            model.get("display_name"),
-        }
-        if model_key not in identifiers:
-            continue
-        instances = model.get("loaded_instances")
-        if isinstance(instances, list) and instances:
+        if model_key in {entry.get("key"), entry.get("display_name")}:
+            model = entry
+            break
+    if model is None:
+        raise ValueError(f"LM Studio does not list the model '{model_key}'.")
+
+    instances = model.get("loaded_instances")
+    if not isinstance(instances, list):
+        raise ValueError("LM Studio returned invalid loaded model instances.")
+    load_key = model.get("key") or model_key
+
+    if not instances:
+        load_model(load_key, context_length=context_length, base_url=base_url)
+        return True
+
+    if context_length is None:
+        return False
+
+    requested_context_length = int(context_length)
+    for instance in instances:
+        config = instance.get("config") if isinstance(instance, dict) else None
+        active_context_length = (
+            config.get("context_length") if isinstance(config, dict) else None
+        )
+        if active_context_length == requested_context_length:
             return False
 
-    load_model(model_key, context_length=context_length, base_url=base_url)
+    _unload_model_instances(instances, base_url=base_url)
+    load_model(
+        load_key,
+        context_length=requested_context_length,
+        base_url=base_url,
+    )
     return True
 
 
@@ -71,7 +111,7 @@ def load_model(model_key, context_length=None, base_url=None, timeout=120):
     if not isinstance(model_key, str) or not model_key.strip():
         raise ValueError("A model key is required to load an LM Studio model.")
 
-    payload = {"model_key": model_key.strip()}
+    payload = {"model": model_key.strip()}
     if context_length is not None:
         payload["context_length"] = int(context_length)
 

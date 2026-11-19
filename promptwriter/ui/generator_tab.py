@@ -24,7 +24,10 @@ from promptwriter.services.lora import (
 from promptwriter.services.prompt_builder import assemble_text_request
 from promptwriter.storage.config_store import load_config
 from promptwriter.storage.history_db import insert_generation
-from promptwriter.storage.profile_store import profile_request_kwargs
+from promptwriter.storage.profile_store import (
+    profile_context_length,
+    profile_request_kwargs,
+)
 from promptwriter.utils.text import (
     format_as_single_line_prompts,
     is_numeric_result,
@@ -429,6 +432,9 @@ class GeneratorTabMixin:
             }
             generation_settings.update(
                 profile_request_kwargs(engine, self.generator_profile)
+            )
+            generation_settings["context_length"] = profile_context_length(
+                engine, self.generator_profile
             )
             generation_settings["temperature"] = self.generator_temp_var.get()
             force_single_line = self.force_single_line_var.get()

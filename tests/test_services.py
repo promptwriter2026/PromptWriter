@@ -236,6 +236,19 @@ class ReasoningCleanupTests(unittest.TestCase):
             with self.subTest(raw=raw):
                 self.assertEqual(strip_think_tags(raw), expected)
 
+    def test_strip_gemma_channel_thought_blocks(self):
+        cases = {
+            "<|channel>thought\nreasoning<channel|>final": "final",
+            "<|CHANNEL>thought reasoning<CHANNEL|>final": "final",
+            "<|channel>thought<channel|>A<|channel>thought\nB<channel|>": "A",
+            "final<|channel>thought unclosed": "final",
+            "<|channel>thought unclosed": "",
+            "final prompt": "final prompt",
+        }
+        for raw, expected in cases.items():
+            with self.subTest(raw=raw):
+                self.assertEqual(strip_think_tags(raw), expected)
+
     def test_client_strips_reasoning_before_returning(self):
         response = chat_response("<think>reasoning</think>final prompt")
         with patch.object(llm_client.requests, "post", return_value=response):
@@ -342,7 +355,7 @@ class LmStudioApiTests(unittest.TestCase):
         )
         self.assertEqual(
             post.call_args.kwargs["json"],
-            {"model_key": "model@q4", "context_length": 8192},
+            {"model": "model@q4", "context_length": 8192},
         )
 
     def test_load_model_omits_context_length_when_not_given(self):
@@ -350,7 +363,7 @@ class LmStudioApiTests(unittest.TestCase):
             lm_studio_api.requests, "post", return_value=FakeResponse({})
         ) as post:
             lm_studio_api.load_model("model", base_url="http://host:1234")
-        self.assertEqual(post.call_args.kwargs["json"], {"model_key": "model"})
+        self.assertEqual(post.call_args.kwargs["json"], {"model": "model"})
 
     def test_load_model_requires_model_key(self):
         for model_key in ("", "   ", None):
@@ -715,6 +728,17 @@ class ProfileInjectionTests(unittest.TestCase):
         self.assertNotIn("cache_prompt", payload)
         self.assertEqual(payload["messages"][-1]["content"], "USER")
 
+    def test_profile_context_length_is_local_only(self):
+        local = self._profile(LOCAL_ENGINE, "text", context_length=4096)
+        self.assertEqual(
+            profile_store.profile_context_length(LOCAL_ENGINE, local), 4096
+        )
+        auto = self._profile(LOCAL_ENGINE, "text")
+        self.assertIsNone(
+            profile_store.profile_context_length(LOCAL_ENGINE, auto)
+        )
+        self.assertIsNone(profile_store.profile_context_length("Groq", local))
+
     def test_gemini_profile_maps_top_p_and_max_tokens(self):
         profile = self._profile(
             "Gemini", "text", temperature=0.4, top_p=0.8, max_tokens=1024
@@ -767,17 +791,22 @@ class EnsureModelLoadedTests(unittest.TestCase):
         )
         self.assertEqual(
             post.call_args.kwargs["json"],
-            {"model_key": "local-model", "context_length": 8192},
+            {"model": "local-model", "context_length": 8192},
         )
 
-    def test_skips_load_when_model_instance_is_present(self):
+    def test_skips_load_when_loaded_context_length_matches(self):
         models = FakeResponse(
             {
                 "models": [
                     {
                         "key": "local-model",
                         "display_name": "Local Model",
-                        "loaded_instances": [{"id": "instance-1"}],
+                        "loaded_instances": [
+                            {
+                                "id": "instance-1",
+                                "config": {"context_length": 8192},
+                            }
+                        ],
                     }
                 ]
             }
@@ -790,6 +819,46 @@ class EnsureModelLoadedTests(unittest.TestCase):
             )
         self.assertFalse(loaded)
         post.assert_not_called()
+
+    def test_reloads_when_loaded_context_length_differs(self):
+        models = FakeResponse(
+            {
+                "models": [
+                    {
+                        "key": "local-model",
+                        "display_name": "Local Model",
+                        "loaded_instances": [
+                            {
+                                "id": "instance-1",
+                                "config": {"context_length": 8192},
+                            }
+                        ],
+                    }
+                ]
+            }
+        )
+        with patch.object(
+            lm_studio_api.requests, "get", return_value=models
+        ), patch.object(
+            lm_studio_api.requests,
+            "post",
+            side_effect=[FakeResponse({}), FakeResponse({})],
+        ) as post:
+            loaded = lm_studio_api.ensure_model_loaded(
+                "local-model", context_length=4096, base_url="http://host:1234"
+            )
+        self.assertTrue(loaded)
+        self.assertEqual(len(post.call_args_list), 2)
+        unload_call, load_call = post.call_args_list
+        self.assertEqual(
+            unload_call.args[0], "http://host:1234/api/v1/models/unload"
+        )
+        self.assertEqual(unload_call.kwargs["json"], {"instance_id": "instance-1"})
+        self.assertEqual(load_call.args[0], "http://host:1234/api/v1/models/load")
+        self.assertEqual(
+            load_call.kwargs["json"],
+            {"model": "local-model", "context_length": 4096},
+        )
 
     def test_matches_display_name_and_omits_context_for_auto(self):
         models = FakeResponse(
@@ -812,7 +881,33 @@ class EnsureModelLoadedTests(unittest.TestCase):
                 "local-model", context_length=None, base_url="http://host:1234"
             )
         self.assertTrue(loaded)
-        self.assertEqual(post.call_args.kwargs["json"], {"model_key": "local-model"})
+        self.assertEqual(post.call_args.kwargs["json"], {"model": "vendor/model"})
+
+    def test_load_errors_are_not_swallowed(self):
+        models = FakeResponse(
+            {
+                "models": [
+                    {
+                        "key": "local-model",
+                        "display_name": "Local Model",
+                        "loaded_instances": [],
+                    }
+                ]
+            }
+        )
+        with patch.object(
+            lm_studio_api.requests, "get", return_value=models
+        ), patch.object(
+            lm_studio_api.requests,
+            "post",
+            return_value=FakeResponse({"error": "bad load"}, status_code=400),
+        ):
+            with self.assertRaises(requests.exceptions.HTTPError):
+                lm_studio_api.ensure_model_loaded(
+                    "local-model",
+                    context_length=4096,
+                    base_url="http://host:1234",
+                )
 
 
 if __name__ == "__main__":
