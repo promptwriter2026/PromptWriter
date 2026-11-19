@@ -39,9 +39,19 @@ def filter_groq_models(model_data):
         normalized_id = model_id.lower()
         if any(term in normalized_id for term in GROQ_EXCLUDED_MODEL_TERMS):
             continue
+        output_modalities = item.get("output_modalities")
+        if isinstance(output_modalities, list) and output_modalities:
+            if "text" not in {str(mode).lower() for mode in output_modalities}:
+                continue
+        input_modalities = item.get("input_modalities")
+        if isinstance(input_modalities, list) and input_modalities:
+            supported_inputs = {str(mode).lower() for mode in input_modalities}
+            if "text" not in supported_inputs and "image" not in supported_inputs:
+                continue
         if model_id not in seen_models:
             filtered_models.append(model_id)
             seen_models.add(model_id)
+    return filtered_models
 
 
 def filter_local_models(model_data):

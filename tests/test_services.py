@@ -380,5 +380,133 @@ class BaseUrlConfigTests(unittest.TestCase):
         self.assertEqual(get.call_args.args[0], "http://host:9999/v1/models")
 
 
+GROQ_MODELS_RESPONSE = {
+    "data": [
+        {
+            "id": "qwen/qwen3.8-27b",
+            "input_modalities": ["text", "image"],
+            "output_modalities": ["text"],
+        },
+        {
+            "id": "whisper-large-v3",
+            "input_modalities": ["audio"],
+            "output_modalities": ["transcription"],
+        },
+        {
+            "id": "canopylabs/orpheus-v1-english",
+            "input_modalities": ["text"],
+            "output_modalities": ["speech"],
+        },
+        {
+            "id": "openai/gpt-oss-20b",
+            "input_modalities": ["text"],
+            "output_modalities": ["text"],
+        },
+        {
+            "id": "meta-llama/llama-prompt-guard-2-22m",
+            "input_modalities": ["text"],
+            "output_modalities": ["text"],
+        },
+        {
+            "id": "allam-2-7b",
+            "input_modalities": ["text"],
+            "output_modalities": ["text"],
+        },
+        {
+            "id": "openai/gpt-oss-safeguard-20b",
+            "input_modalities": ["text"],
+            "output_modalities": ["text"],
+        },
+        {
+            "id": "openai/gpt-oss-120b",
+            "input_modalities": ["text"],
+            "output_modalities": ["text"],
+        },
+    ]
+}
+
+EXPECTED_GROQ_MODELS = [
+    "qwen/qwen3.8-27b",
+    "openai/gpt-oss-20b",
+    "allam-2-7b",
+    "openai/gpt-oss-120b",
+]
+
+
+class GroqModelFetchTests(unittest.TestCase):
+    def test_filter_keeps_chat_and_vision_models(self):
+        self.assertEqual(
+            model_catalog.filter_groq_models(GROQ_MODELS_RESPONSE["data"]),
+            EXPECTED_GROQ_MODELS,
+        )
+
+    def test_filter_excludes_non_chat_modalities_without_blacklist_terms(self):
+        model_data = [
+            {
+                "id": "vendor/audio-model",
+                "input_modalities": ["audio"],
+                "output_modalities": ["transcription"],
+            },
+            {
+                "id": "vendor/speech-model",
+                "input_modalities": ["text"],
+                "output_modalities": ["speech"],
+            },
+            {
+                "id": "vendor/chat-model",
+                "input_modalities": ["text"],
+                "output_modalities": ["text"],
+            },
+        ]
+        self.assertEqual(
+            model_catalog.filter_groq_models(model_data), ["vendor/chat-model"]
+        )
+
+    def test_filter_keeps_models_without_modality_fields_and_dedupes(self):
+        model_data = [
+            {"id": "legacy-model"},
+            {"id": "legacy-model"},
+            {"id": "new-model", "input_modalities": ["text"]},
+            "not-a-dict",
+            {"id": 123},
+        ]
+        self.assertEqual(
+            model_catalog.filter_groq_models(model_data),
+            ["legacy-model", "new-model"],
+        )
+
+    def test_fetch_provider_models_returns_filtered_groq_models(self):
+        response = FakeResponse(GROQ_MODELS_RESPONSE)
+        with patch.object(model_catalog.requests, "get", return_value=response) as get:
+            models, fallback = model_catalog.fetch_provider_models(
+                "Groq", "secret-key"
+            )
+        self.assertEqual(models, EXPECTED_GROQ_MODELS)
+        self.assertIsNone(fallback)
+        self.assertEqual(get.call_args.args[0], "https://api.groq.com/openai/v1/models")
+        self.assertEqual(
+            get.call_args.kwargs["headers"]["Authorization"], "Bearer secret-key"
+        )
+        self.assertNotIn("secret-key", get.call_args.args[0])
+
+    def test_fetch_provider_models_raises_when_groq_returns_only_non_chat(self):
+        response = FakeResponse(
+            {
+                "data": [
+                    {
+                        "id": "whisper-large-v3",
+                        "input_modalities": ["audio"],
+                        "output_modalities": ["transcription"],
+                    }
+                ]
+            }
+        )
+        with patch.object(model_catalog.requests, "get", return_value=response):
+            with self.assertRaisesRegex(
+                ValueError, "Groq returned no available models"
+            ):
+                model_catalog.fetch_provider_models("Groq", "secret-key")
+
+
 if __name__ == "__main__":
     unittest.main()
