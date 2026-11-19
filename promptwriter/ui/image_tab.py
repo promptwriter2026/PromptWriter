@@ -37,7 +37,8 @@ from promptwriter.utils.text import (
 class ImagePromptTabMixin:
     def _build_image_prompt_tab(self):
         tab = self.image_prompt_tab
-        tab.grid_columnconfigure((0, 1), weight=1)
+        tab.grid_columnconfigure(0, weight=1, uniform="image_columns")
+        tab.grid_columnconfigure(1, weight=1, uniform="image_columns")
         tab.grid_rowconfigure(5, weight=1)
         tab.grid_rowconfigure(9, weight=1)
 
@@ -120,6 +121,7 @@ class ImagePromptTabMixin:
             row=4, column=0, columnspan=2, padx=12, pady=(0, 8), sticky="ew"
         )
         image_hardware_frame.grid_columnconfigure(1, weight=1)
+        self.image_hardware_frame = image_hardware_frame
         self.image_auto_unload_checkbox = ctk.CTkCheckBox(
             image_hardware_frame,
             text="Auto-Unload Model from VRAM",
@@ -147,9 +149,14 @@ class ImagePromptTabMixin:
             image_hardware_frame,
             text="LM Studio Status: [Checking...]",
             anchor="w",
+            justify="left",
+            wraplength=560,
         )
         self.image_lm_studio_status_label.grid(
             row=2, column=0, columnspan=2, pady=(4, 0), sticky="ew"
+        )
+        image_hardware_frame.bind(
+            "<Configure>", self._update_image_lm_status_wraplength
         )
 
         image_frame = ctk.CTkFrame(tab)
@@ -416,6 +423,11 @@ class ImagePromptTabMixin:
         wraplength = max(200, event.width - 24)
         if self.image_status_label.cget("wraplength") != wraplength:
             self.image_status_label.configure(wraplength=wraplength)
+
+    def _update_image_lm_status_wraplength(self, event):
+        wraplength = max(300, event.width - 24)
+        if self.image_lm_studio_status_label.cget("wraplength") != wraplength:
+            self.image_lm_studio_status_label.configure(wraplength=wraplength)
 
     def _generate_image_prompt(self):
         if self.generate_image_prompt_button.cget("state") == "disabled":

@@ -1,12 +1,45 @@
 import threading
+from urllib.parse import urlparse
 
 import requests
 
-from promptwriter.config import LOCAL_ENGINE
+from promptwriter.config import LOCAL_ENGINE, LOCAL_SERVER_ROOT_URL
 from promptwriter.services.lm_studio_api import (
     get_lm_studio_loaded_models,
     unload_lm_studio_models,
 )
+
+
+def lm_studio_endpoint():
+    parsed = urlparse(LOCAL_SERVER_ROOT_URL)
+    if parsed.port:
+        return f"{parsed.hostname}:{parsed.port}"
+    return parsed.hostname or LOCAL_SERVER_ROOT_URL
+
+
+def describe_lm_studio_error(error):
+    endpoint = lm_studio_endpoint()
+    if isinstance(error, requests.exceptions.Timeout):
+        return f"Timed out ({endpoint})"
+    if isinstance(error, requests.exceptions.HTTPError):
+        response = getattr(error, "response", None)
+        status_code = getattr(response, "status_code", None)
+        if status_code:
+            return f"HTTP {status_code} ({endpoint})"
+        return f"HTTP error ({endpoint})"
+    if isinstance(error, requests.exceptions.RequestException):
+        return f"Offline — cannot connect to {endpoint}"
+    message = " ".join(str(error).split())
+    if len(message) > 100:
+        message = message[:99].rstrip() + "…"
+    return message or "Unknown error"
+
+
+def format_lm_studio_status(status):
+    text = " ".join(str(status).split())
+    if len(text) > 160:
+        text = text[:159].rstrip() + "…"
+    return f"LM Studio Status: {text}"
 
 
 class LMStudioMixin:
@@ -47,18 +80,19 @@ class LMStudioMixin:
             status = ", ".join(model_names) if model_names else "Empty"
             color = "gray"
         except (requests.exceptions.RequestException, ValueError) as error:
-            status = f"Unavailable: {error}"
+            status = describe_lm_studio_error(error)
             color = "red"
         self.after(0, self._finish_lm_studio_status_refresh, status, color)
 
     def _finish_lm_studio_status_refresh(self, status, color):
-        status_text = f"LM Studio Status: {status}"
+        status_text = format_lm_studio_status(status)
         self.generator_lm_studio_status_label.configure(
             text=status_text, text_color=color
         )
         self.image_lm_studio_status_label.configure(
             text=status_text, text_color=color
         )
+        self.after_idle(self._sync_generator_controls_height)
         self._lm_studio_status_check_in_progress = False
         if self._has_local_engine_selected():
             self.after(4000, self._refresh_lm_studio_status)
@@ -81,7 +115,7 @@ class LMStudioMixin:
             status = ", ".join(model_names) if model_names else "Empty"
             color = "gray"
         except (requests.exceptions.RequestException, ValueError) as error:
-            status = f"Unload failed: {error}"
+            status = f"Unload failed: {describe_lm_studio_error(error)}"
             color = "red"
         self.after(0, self._finish_lm_studio_unload, status, color)
 
@@ -101,13 +135,14 @@ class LMStudioMixin:
         )
 
     def _set_lm_studio_status(self, status, color):
-        status_text = f"LM Studio Status: {status}"
+        status_text = format_lm_studio_status(status)
         self.generator_lm_studio_status_label.configure(
             text=status_text, text_color=color
         )
         self.image_lm_studio_status_label.configure(
             text=status_text, text_color=color
         )
+        self.after_idle(self._sync_generator_controls_height)
 
     def _auto_unload_lm_studio_model(self):
         try:
@@ -118,6 +153,6 @@ class LMStudioMixin:
             self.after(
                 0,
                 self._set_lm_studio_status,
-                f"Unload failed: {error}",
+                f"Unload failed: {describe_lm_studio_error(error)}",
                 "red",
             )

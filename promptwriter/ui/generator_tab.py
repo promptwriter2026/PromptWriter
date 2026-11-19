@@ -33,7 +33,8 @@ from promptwriter.utils.text import (
 class GeneratorTabMixin:
     def _build_generator_tab(self):
         tab = self.generator_tab
-        tab.grid_columnconfigure((0, 1), weight=1)
+        tab.grid_columnconfigure(0, weight=1, uniform="generator_columns")
+        tab.grid_columnconfigure(1, weight=1, uniform="generator_columns")
         tab.grid_rowconfigure(6, weight=1)
         tab.grid_rowconfigure(9, weight=2)
 
@@ -115,6 +116,9 @@ class GeneratorTabMixin:
             row=6, column=0, padx=12, pady=(0, 12), sticky="ew"
         )
         generator_temperature_frame.grid_columnconfigure(1, weight=1)
+        self.generator_temperature_frame = generator_temperature_frame
+        self._generator_controls_minheight = 0
+        self._generator_controls_sync_active = False
         self.generator_temp_label = ctk.CTkLabel(
             generator_temperature_frame, text="Temp: 0.70"
         )
@@ -173,9 +177,14 @@ class GeneratorTabMixin:
             generator_temperature_frame,
             text="LM Studio Status: [Checking...]",
             anchor="w",
+            justify="left",
+            wraplength=320,
         )
         self.generator_lm_studio_status_label.grid(
             row=4, column=0, columnspan=2, pady=(4, 0), sticky="ew"
+        )
+        generator_temperature_frame.bind(
+            "<Configure>", self._update_generator_controls_layout
         )
 
         rough_idea_header = ctk.CTkFrame(tab, fg_color="transparent")
@@ -319,6 +328,31 @@ class GeneratorTabMixin:
         wraplength = max(200, event.width - 24)
         if self.status_label.cget("wraplength") != wraplength:
             self.status_label.configure(wraplength=wraplength)
+
+    def _update_generator_controls_layout(self, event):
+        wraplength = max(180, event.width - 24)
+        if self.generator_lm_studio_status_label.cget("wraplength") != wraplength:
+            self.generator_lm_studio_status_label.configure(wraplength=wraplength)
+        self._sync_generator_controls_height()
+
+    def _sync_generator_controls_height(self):
+        if self._generator_controls_sync_active:
+            return
+        self._generator_controls_sync_active = True
+        try:
+            frame = self.generator_temperature_frame
+            frame.update_idletasks()
+            pady = frame.grid_info().get("pady", 0)
+            if isinstance(pady, (tuple, list)):
+                padding = sum(int(value) for value in pady)
+            else:
+                padding = sum(int(part) for part in str(pady).split())
+            required_height = frame.winfo_reqheight() + padding
+            if required_height != self._generator_controls_minheight:
+                self._generator_controls_minheight = required_height
+                self.generator_tab.grid_rowconfigure(6, minsize=required_height)
+        finally:
+            self._generator_controls_sync_active = False
 
     def _generate_prompt(self):
         if self.generate_button.cget("state") == "disabled":
