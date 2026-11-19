@@ -18,6 +18,7 @@ from promptwriter.config import (
 )
 from promptwriter.services.image_tools import optimize_image_for_api
 from promptwriter.services.llm_client import request_generated_prompt
+from promptwriter.services.lm_studio_api import ensure_model_loaded
 from promptwriter.services.lora import (
     enforce_lora_trigger_prefix,
     find_lora_profile,
@@ -26,6 +27,7 @@ from promptwriter.services.lora import (
 from promptwriter.services.prompt_builder import assemble_image_request
 from promptwriter.storage.config_store import load_config
 from promptwriter.storage.history_db import insert_generation
+from promptwriter.storage.profile_store import profile_request_kwargs
 from promptwriter.utils.text import (
     format_as_single_line_prompts,
     is_numeric_result,
@@ -39,10 +41,10 @@ class ImagePromptTabMixin:
         tab.grid_columnconfigure(0, weight=1, uniform="image_columns")
         tab.grid_columnconfigure(1, weight=1, uniform="image_columns")
         tab.grid_rowconfigure(5, weight=1)
-        tab.grid_rowconfigure(9, weight=1)
+        tab.grid_rowconfigure(9, weight=2, minsize=80)
 
         ctk.CTkLabel(tab, text="LLM engine").grid(
-            row=0, column=0, padx=12, pady=(12, 4), sticky="w"
+            row=0, column=0, padx=12, pady=(10, 4), sticky="w"
         )
         self.image_engine_menu = ctk.CTkOptionMenu(
             tab, values=LLM_ENGINES, command=self._on_image_engine_selected
@@ -56,7 +58,7 @@ class ImagePromptTabMixin:
         )
 
         ctk.CTkLabel(tab, text="Selected API model").grid(
-            row=0, column=1, padx=12, pady=(12, 4), sticky="w"
+            row=0, column=1, padx=12, pady=(10, 4), sticky="w"
         )
         image_api_model_frame = ctk.CTkFrame(tab, fg_color="transparent")
         image_api_model_frame.grid(
@@ -85,6 +87,17 @@ class ImagePromptTabMixin:
         self.image_fetch_button.grid(row=0, column=1, sticky="e")
         self._add_tooltip(
             self.image_fetch_button, "Fetch available models from the API provider."
+        )
+        self.image_profile_button = ctk.CTkButton(
+            image_api_model_frame,
+            text="⚙",
+            width=34,
+            command=lambda: self._open_profile_dialog("vision"),
+        )
+        self.image_profile_button.grid(row=0, column=2, padx=(6, 0), sticky="e")
+        self._add_tooltip(
+            self.image_profile_button,
+            "Edit sampling settings for the selected model.",
         )
 
         ctk.CTkLabel(tab, text="Target model").grid(
@@ -117,7 +130,7 @@ class ImagePromptTabMixin:
 
         image_hardware_frame = ctk.CTkFrame(tab, fg_color="transparent")
         image_hardware_frame.grid(
-            row=4, column=0, columnspan=2, padx=12, pady=(0, 8), sticky="ew"
+            row=4, column=0, columnspan=2, padx=12, pady=(0, 6), sticky="ew"
         )
         image_hardware_frame.grid_columnconfigure(1, weight=1)
         self.image_hardware_frame = image_hardware_frame
@@ -127,23 +140,15 @@ class ImagePromptTabMixin:
             variable=self.auto_unload_var,
         )
         self.image_auto_unload_checkbox.grid(
-            row=1, column=0, padx=(0, 8), sticky="w"
-        )
-        self.image_single_line_checkbox = ctk.CTkCheckBox(
-            image_hardware_frame,
-            text="Enforce Single-Line Prompts",
-            variable=self.force_single_line_var,
-        )
-        self.image_single_line_checkbox.grid(
-            row=0, column=0, columnspan=2, pady=(0, 8), sticky="w"
+            row=0, column=0, padx=(0, 8), sticky="w"
         )
         self.image_clear_vram_button = ctk.CTkButton(
             image_hardware_frame,
-            text="Clear VRAM / Unload Model",
-            width=210,
+            text="Unload Model",
+            width=120,
             command=self._clear_lm_studio_vram,
         )
-        self.image_clear_vram_button.grid(row=1, column=1, sticky="w")
+        self.image_clear_vram_button.grid(row=0, column=1, sticky="w")
         self.image_lm_studio_status_label = ctk.CTkLabel(
             image_hardware_frame,
             text="LM Studio Status: [Checking...]",
@@ -152,7 +157,7 @@ class ImagePromptTabMixin:
             wraplength=560,
         )
         self.image_lm_studio_status_label.grid(
-            row=2, column=0, columnspan=2, pady=(4, 0), sticky="ew"
+            row=1, column=0, columnspan=2, pady=(2, 0), sticky="ew"
         )
         image_hardware_frame.bind(
             "<Configure>", self._update_image_lm_status_wraplength
@@ -179,7 +184,9 @@ class ImagePromptTabMixin:
         ctk.CTkLabel(
             context_frame, text="Additional Context / Instructions"
         ).grid(row=0, column=0, pady=(0, 4), sticky="w")
-        self.image_context_text = ctk.CTkTextbox(context_frame, wrap="word")
+        self.image_context_text = ctk.CTkTextbox(
+            context_frame, height=96, wrap="word"
+        )
         self.image_context_text.grid(row=1, column=0, sticky="nsew")
         self._add_tooltip(
             self.image_context_text,
@@ -188,7 +195,7 @@ class ImagePromptTabMixin:
 
         image_actions = ctk.CTkFrame(tab, fg_color="transparent")
         image_actions.grid(
-            row=6, column=0, columnspan=2, padx=12, pady=8, sticky="ew"
+            row=6, column=0, columnspan=2, padx=12, pady=4, sticky="ew"
         )
         image_actions.grid_columnconfigure(0, weight=1)
         image_actions.grid_columnconfigure(1, weight=1)
@@ -233,21 +240,24 @@ class ImagePromptTabMixin:
             "Adjust how varied or predictable image analysis responses are.",
         )
         image_actions.grid_columnconfigure(3, weight=2)
-        self.vision_cache_checkbox = ctk.CTkCheckBox(
+        self.vision_profile_label = ctk.CTkLabel(
             image_actions,
-            text="Enable Local Prompt Caching",
-            variable=self.vision_cache_var,
+            text="Default profile",
+            text_color="gray",
+            anchor="w",
+            height=18,
+            font=ctk.CTkFont(size=11),
         )
-        self.vision_cache_checkbox.grid(
-            row=1, column=0, columnspan=4, pady=(8, 0), sticky="w"
+        self.vision_profile_label.grid(
+            row=1, column=0, columnspan=4, pady=(6, 0), sticky="ew"
         )
         self._add_tooltip(
-            self.vision_cache_checkbox,
-            "Enable prompt caching when using the Local API to speed up repeated requests.",
+            self.vision_profile_label,
+            "Profile settings for the selected engine and model.",
         )
         image_status_frame = ctk.CTkFrame(tab, fg_color="transparent")
         image_status_frame.grid(
-            row=7, column=0, columnspan=2, padx=12, pady=(0, 4), sticky="ew"
+            row=7, column=0, columnspan=2, padx=12, pady=(0, 2), sticky="ew"
         )
         image_status_frame.grid_columnconfigure(0, weight=1)
         self.image_status_label = ctk.CTkLabel(
@@ -270,12 +280,23 @@ class ImagePromptTabMixin:
         )
         self.image_time_label.grid(row=0, column=1, padx=(8, 0), sticky="e")
 
-        ctk.CTkLabel(tab, text="Output Prompt").grid(
-            row=8, column=0, columnspan=2, padx=12, pady=(4, 4), sticky="w"
+        output_header = ctk.CTkFrame(tab, fg_color="transparent")
+        output_header.grid(
+            row=8, column=0, columnspan=2, padx=12, pady=(0, 2), sticky="ew"
         )
+        output_header.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(output_header, text="Output Prompt").grid(
+            row=0, column=0, sticky="w"
+        )
+        self.image_single_line_checkbox = ctk.CTkCheckBox(
+            output_header,
+            text="Enforce Single-Line Prompts",
+            variable=self.force_single_line_var,
+        )
+        self.image_single_line_checkbox.grid(row=0, column=1, sticky="e")
         self.image_output_text = ctk.CTkTextbox(tab, wrap="word")
         self.image_output_text.grid(
-            row=9, column=0, columnspan=2, padx=12, pady=(0, 8), sticky="nsew"
+            row=9, column=0, columnspan=2, padx=12, pady=(0, 6), sticky="nsew"
         )
         self._add_tooltip(
             self.image_output_text, "The final generated prompt will appear here."
@@ -287,7 +308,7 @@ class ImagePromptTabMixin:
             command=self._copy_image_output,
         )
         self.copy_image_output_button.grid(
-            row=10, column=0, columnspan=2, padx=12, pady=(0, 12)
+            row=10, column=0, columnspan=2, padx=12, pady=(0, 6)
         )
         self._add_tooltip(
             self.copy_image_output_button,
@@ -312,6 +333,7 @@ class ImagePromptTabMixin:
     def _update_vision_temp_label(self, value=None):
         temperature = self.vision_temp_var.get() if value is None else float(value)
         self.vision_temp_label.configure(text=f"Temp: {temperature:.2f}")
+        self._update_profile_summary("vision")
 
     def _select_image(self):
         image_path = filedialog.askopenfilename(
@@ -471,18 +493,19 @@ class ImagePromptTabMixin:
                 else ""
             )
             image_path = self._selected_image_path
-            temperature = self.vision_temp_var.get()
-            cache_prompt = self.vision_cache_var.get()
             auto_unload = self.auto_unload_var.get()
             force_single_line = self.force_single_line_var.get()
             generation_settings = {
                 "target_model": self.image_target_model_menu.get(),
                 "character_lora": selected_lora,
-                "temperature": temperature,
-                "cache_prompt": cache_prompt,
                 "auto_unload": auto_unload,
                 "force_single_line": force_single_line,
             }
+            generation_settings.update(
+                profile_request_kwargs(engine, self.vision_profile)
+            )
+            temperature = self.vision_temp_var.get()
+            generation_settings["temperature"] = temperature
         except (OSError, ValueError, json.JSONDecodeError) as error:
             self.image_status_label.configure(
                 text=f"Error: {error}", text_color="red"
@@ -506,7 +529,6 @@ class ImagePromptTabMixin:
                 image_path,
                 trigger_words,
                 temperature,
-                cache_prompt,
                 auto_unload,
                 rough_idea,
                 generation_settings,
@@ -524,7 +546,6 @@ class ImagePromptTabMixin:
         image_path,
         trigger_words,
         temperature,
-        cache_prompt,
         auto_unload,
         rough_idea,
         generation_settings,
@@ -533,6 +554,14 @@ class ImagePromptTabMixin:
         start_time = None
         elapsed = None
         try:
+            if (
+                engine == LOCAL_ENGINE
+                and generation_settings.get("context_length") is not None
+            ):
+                ensure_model_loaded(
+                    api_model,
+                    context_length=generation_settings["context_length"],
+                )
             image_base64 = optimize_image_for_api(image_path)
             start_time = time.time()
             generated_prompt, quota, total_used = request_generated_prompt(
@@ -543,7 +572,13 @@ class ImagePromptTabMixin:
                 image_base64=image_base64,
                 include_quota=True,
                 temperature=temperature,
-                cache_prompt=cache_prompt,
+                top_p=generation_settings.get("top_p"),
+                min_p=generation_settings.get("min_p"),
+                repeat_penalty=generation_settings.get("repeat_penalty"),
+                max_tokens=generation_settings.get("max_tokens"),
+                disable_thinking=generation_settings.get(
+                    "disable_thinking", False
+                ),
             )
             elapsed = time.time() - start_time
             if engine == LOCAL_ENGINE and auto_unload:

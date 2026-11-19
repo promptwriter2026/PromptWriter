@@ -15,6 +15,7 @@ from promptwriter.config import (
     SYSTEM_PROMPTS_DIR,
 )
 from promptwriter.services.llm_client import request_generated_prompt
+from promptwriter.services.lm_studio_api import ensure_model_loaded
 from promptwriter.services.lora import (
     enforce_lora_trigger_prefix,
     find_lora_profile,
@@ -23,6 +24,7 @@ from promptwriter.services.lora import (
 from promptwriter.services.prompt_builder import assemble_text_request
 from promptwriter.storage.config_store import load_config
 from promptwriter.storage.history_db import insert_generation
+from promptwriter.storage.profile_store import profile_request_kwargs
 from promptwriter.utils.text import (
     format_as_single_line_prompts,
     is_numeric_result,
@@ -34,26 +36,26 @@ class GeneratorTabMixin:
         tab = self.generator_tab
         tab.grid_columnconfigure(0, weight=1, uniform="generator_columns")
         tab.grid_columnconfigure(1, weight=1, uniform="generator_columns")
-        tab.grid_rowconfigure(6, weight=1)
-        tab.grid_rowconfigure(9, weight=2)
+        tab.grid_rowconfigure(6, weight=0)
+        tab.grid_rowconfigure(9, weight=2, minsize=80)
 
         ctk.CTkLabel(tab, text="LLM engine").grid(
-            row=0, column=0, padx=12, pady=(12, 4), sticky="w"
+            row=0, column=0, padx=12, pady=(10, 4), sticky="w"
         )
         self.engine_menu = ctk.CTkOptionMenu(
             tab, values=LLM_ENGINES, command=self._on_generator_engine_selected
         )
-        self.engine_menu.grid(row=1, column=0, padx=12, pady=(0, 12), sticky="ew")
+        self.engine_menu.grid(row=1, column=0, padx=12, pady=(0, 8), sticky="ew")
         self._add_tooltip(
             self.engine_menu, "Select the API provider (e.g., Groq or Gemini)."
         )
 
         ctk.CTkLabel(tab, text="Selected API model").grid(
-            row=0, column=1, padx=12, pady=(12, 4), sticky="w"
+            row=0, column=1, padx=12, pady=(10, 4), sticky="w"
         )
         api_model_frame = ctk.CTkFrame(tab, fg_color="transparent")
         api_model_frame.grid(
-            row=1, column=1, padx=12, pady=(0, 12), sticky="ew"
+            row=1, column=1, padx=12, pady=(0, 8), sticky="ew"
         )
         api_model_frame.grid_columnconfigure(0, weight=1)
         self.api_model_menu = ctk.CTkComboBox(
@@ -76,43 +78,54 @@ class GeneratorTabMixin:
         self._add_tooltip(
             self.generator_fetch_button, "Fetch available models from the API provider."
         )
+        self.generator_profile_button = ctk.CTkButton(
+            api_model_frame,
+            text="⚙",
+            width=34,
+            command=lambda: self._open_profile_dialog("text"),
+        )
+        self.generator_profile_button.grid(row=0, column=2, padx=(6, 0), sticky="e")
+        self._add_tooltip(
+            self.generator_profile_button,
+            "Edit sampling settings for the selected model.",
+        )
 
         ctk.CTkLabel(tab, text="Target model").grid(
-            row=2, column=0, padx=12, pady=(4, 4), sticky="w"
+            row=2, column=0, padx=12, pady=(4, 2), sticky="w"
         )
         self.model_menu = ctk.CTkOptionMenu(
             tab, values=[""]
         )
-        self.model_menu.grid(row=3, column=0, padx=12, pady=(0, 12), sticky="ew")
+        self.model_menu.grid(row=3, column=0, padx=12, pady=(0, 8), sticky="ew")
         self._add_tooltip(
             self.model_menu,
             "Select the image generator you are writing this prompt for.",
         )
 
         ctk.CTkLabel(tab, text="Camera / lens").grid(
-            row=2, column=1, padx=12, pady=(4, 4), sticky="w"
+            row=2, column=1, padx=12, pady=(4, 2), sticky="w"
         )
         self.camera_menu = ctk.CTkOptionMenu(tab, values=["None / Auto"])
-        self.camera_menu.grid(row=3, column=1, padx=12, pady=(0, 12), sticky="ew")
+        self.camera_menu.grid(row=3, column=1, padx=12, pady=(0, 8), sticky="ew")
         self._add_tooltip(
             self.camera_menu,
             "Select a camera setup to inject professional photography keywords into your prompt.",
         )
 
         ctk.CTkLabel(tab, text="Character / LoRA").grid(
-            row=4, column=0, padx=12, pady=(4, 4), sticky="w"
+            row=4, column=0, padx=12, pady=(4, 2), sticky="w"
         )
         self.lora_menu = ctk.CTkOptionMenu(
             tab, values=["None"], variable=self.generator_lora_var
         )
-        self.lora_menu.grid(row=5, column=0, padx=12, pady=(0, 12), sticky="ew")
+        self.lora_menu.grid(row=5, column=0, padx=12, pady=(0, 8), sticky="ew")
         self._add_tooltip(
             self.lora_menu,
             "Apply a character profile and its trigger words to the generation.",
         )
         generator_temperature_frame = ctk.CTkFrame(tab, fg_color="transparent")
         generator_temperature_frame.grid(
-            row=6, column=0, padx=12, pady=(0, 12), sticky="ew"
+            row=6, column=0, padx=12, pady=(0, 8), sticky="ew"
         )
         generator_temperature_frame.grid_columnconfigure(1, weight=1)
         self.generator_temperature_frame = generator_temperature_frame
@@ -135,17 +148,20 @@ class GeneratorTabMixin:
             self.generator_temp_slider,
             "Adjust how varied or predictable text prompt generation is.",
         )
-        self.generator_cache_checkbox = ctk.CTkCheckBox(
+        self.generator_profile_label = ctk.CTkLabel(
             generator_temperature_frame,
-            text="Enable Local Prompt Caching",
-            variable=self.generator_cache_var,
+            text="Default profile",
+            text_color="gray",
+            anchor="w",
+            height=18,
+            font=ctk.CTkFont(size=11),
         )
-        self.generator_cache_checkbox.grid(
-            row=1, column=0, columnspan=2, pady=(8, 0), sticky="w"
+        self.generator_profile_label.grid(
+            row=1, column=0, columnspan=2, pady=(4, 0), sticky="ew"
         )
         self._add_tooltip(
-            self.generator_cache_checkbox,
-            "Enable prompt caching when using the Local API to speed up repeated requests.",
+            self.generator_profile_label,
+            "Profile settings for the selected engine and model.",
         )
         self.generator_auto_unload_checkbox = ctk.CTkCheckBox(
             generator_temperature_frame,
@@ -155,18 +171,10 @@ class GeneratorTabMixin:
         self.generator_auto_unload_checkbox.grid(
             row=2, column=0, padx=(0, 8), pady=(8, 0), sticky="w"
         )
-        self.generator_single_line_checkbox = ctk.CTkCheckBox(
-            generator_temperature_frame,
-            text="Enforce Single-Line Prompts",
-            variable=self.force_single_line_var,
-        )
-        self.generator_single_line_checkbox.grid(
-            row=3, column=0, columnspan=2, pady=(8, 0), sticky="w"
-        )
         self.generator_clear_vram_button = ctk.CTkButton(
             generator_temperature_frame,
-            text="Clear VRAM / Unload Model",
-            width=210,
+            text="Unload Model",
+            width=120,
             command=self._clear_lm_studio_vram,
         )
         self.generator_clear_vram_button.grid(
@@ -205,9 +213,9 @@ class GeneratorTabMixin:
             self.clear_rough_idea_button, "Instantly clear the rough idea text."
         )
 
-        self.rough_idea_text = ctk.CTkTextbox(tab, height=120, wrap="word")
+        self.rough_idea_text = ctk.CTkTextbox(tab, height=96, wrap="word")
         self.rough_idea_text.grid(
-            row=5, column=1, rowspan=2, padx=12, pady=(0, 12), sticky="nsew"
+            row=5, column=1, rowspan=2, padx=12, pady=(0, 8), sticky="nsew"
         )
         self._add_tooltip(
             self.rough_idea_text,
@@ -218,14 +226,14 @@ class GeneratorTabMixin:
             tab, text="Generate Prompt", command=self._generate_prompt
         )
         self.generate_button.grid(
-            row=7, column=0, padx=12, pady=(0, 8), sticky="w"
+            row=7, column=0, padx=12, pady=(0, 6), sticky="w"
         )
         self._add_tooltip(
             self.generate_button, "Send the data to the LLM to create your prompt."
         )
         generation_status_frame = ctk.CTkFrame(tab, fg_color="transparent")
         generation_status_frame.grid(
-            row=7, column=1, padx=12, pady=(0, 8), sticky="ew"
+            row=7, column=1, padx=12, pady=(0, 6), sticky="ew"
         )
         generation_status_frame.grid_columnconfigure(0, weight=1)
         self.status_label = ctk.CTkLabel(
@@ -246,12 +254,23 @@ class GeneratorTabMixin:
         )
         self.time_label.grid(row=0, column=1, padx=(8, 0), sticky="e")
 
-        ctk.CTkLabel(tab, text="Generated prompt").grid(
-            row=8, column=0, columnspan=2, padx=12, pady=(4, 4), sticky="w"
+        output_header = ctk.CTkFrame(tab, fg_color="transparent")
+        output_header.grid(
+            row=8, column=0, columnspan=2, padx=12, pady=(0, 2), sticky="ew"
         )
+        output_header.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(output_header, text="Generated prompt").grid(
+            row=0, column=0, sticky="w"
+        )
+        self.generator_single_line_checkbox = ctk.CTkCheckBox(
+            output_header,
+            text="Enforce Single-Line Prompts",
+            variable=self.force_single_line_var,
+        )
+        self.generator_single_line_checkbox.grid(row=0, column=1, sticky="e")
         self.output_text = ctk.CTkTextbox(tab, wrap="word")
         self.output_text.grid(
-            row=9, column=0, columnspan=2, padx=12, pady=(0, 8), sticky="nsew"
+            row=9, column=0, columnspan=2, padx=12, pady=(0, 6), sticky="nsew"
         )
         self._add_tooltip(
             self.output_text, "The final generated prompt will appear here."
@@ -284,7 +303,7 @@ class GeneratorTabMixin:
             tab, text="Copy to Clipboard", command=self._copy_output
         )
         self.copy_button.grid(
-            row=10, column=0, columnspan=2, padx=12, pady=(0, 12)
+            row=10, column=0, columnspan=2, padx=12, pady=(0, 6)
         )
         self._add_tooltip(
             self.copy_button, "Copy the final generated prompt to your clipboard."
@@ -322,6 +341,7 @@ class GeneratorTabMixin:
             self.generator_temp_var.get() if value is None else float(value)
         )
         self.generator_temp_label.configure(text=f"Temp: {temperature:.2f}")
+        self._update_profile_summary("text")
 
     def _update_status_wraplength(self, event):
         wraplength = max(200, event.width - 24)
@@ -405,10 +425,12 @@ class GeneratorTabMixin:
                 "character_lora": self.lora_menu.get(),
                 "llm_engine": engine,
                 "api_model": api_model,
-                "temperature": self.generator_temp_var.get(),
-                "cache_prompt": self.generator_cache_var.get(),
                 "auto_unload": self.auto_unload_var.get(),
             }
+            generation_settings.update(
+                profile_request_kwargs(engine, self.generator_profile)
+            )
+            generation_settings["temperature"] = self.generator_temp_var.get()
             force_single_line = self.force_single_line_var.get()
             generation_settings["force_single_line"] = force_single_line
             selected_profile = find_lora_profile(
@@ -454,6 +476,14 @@ class GeneratorTabMixin:
         start_time = None
         elapsed = None
         try:
+            if (
+                engine == LOCAL_ENGINE
+                and generation_settings.get("context_length") is not None
+            ):
+                ensure_model_loaded(
+                    api_model,
+                    context_length=generation_settings["context_length"],
+                )
             start_time = time.time()
             generated_prompt, quota, total_used = request_generated_prompt(
                 engine,
@@ -462,7 +492,13 @@ class GeneratorTabMixin:
                 request_parts,
                 include_quota=True,
                 temperature=generation_settings["temperature"],
-                cache_prompt=generation_settings["cache_prompt"],
+                top_p=generation_settings.get("top_p"),
+                min_p=generation_settings.get("min_p"),
+                repeat_penalty=generation_settings.get("repeat_penalty"),
+                max_tokens=generation_settings.get("max_tokens"),
+                disable_thinking=generation_settings.get(
+                    "disable_thinking", False
+                ),
             )
             elapsed = time.time() - start_time
             if engine == LOCAL_ENGINE and generation_settings["auto_unload"]:

@@ -7,6 +7,7 @@ import customtkinter as ctk
 from promptwriter.config import (
     CAMERAS_PATH,
     DEFAULT_GEMINI_MODEL,
+    DEFAULT_LM_STUDIO_BASE_URL,
     LLM_ENGINES,
     LORA_PROFILES_PATH,
     SYSTEM_PROMPTS_DIR,
@@ -15,6 +16,7 @@ from promptwriter.config import (
 )
 from promptwriter.services.lora import lora_profile_value
 from promptwriter.storage.config_store import save_config
+from promptwriter.storage.profile_store import delete_profile, list_profiles
 
 
 class SettingsTabMixin:
@@ -51,19 +53,71 @@ class SettingsTabMixin:
             "Enter your API key. This is saved locally in your config file.",
         )
 
+        ctk.CTkLabel(tab, text="LM Studio base URL (Local)").grid(
+            row=2, column=0, columnspan=2, padx=12, pady=(4, 4), sticky="w"
+        )
+        self.lm_studio_url_entry = ctk.CTkEntry(tab)
+        self.lm_studio_url_entry.grid(
+            row=3, column=0, columnspan=2, padx=12, pady=(0, 8), sticky="ew"
+        )
+        self._add_tooltip(
+            self.lm_studio_url_entry,
+            "Address of the LM Studio server, for example http://127.0.0.1:1234.",
+        )
+
         self.save_settings_button = ctk.CTkButton(
             tab, text="Save Settings", command=self._save_settings
         )
         self.save_settings_button.grid(
-            row=3, column=0, columnspan=2, padx=12, pady=(0, 8), sticky="ew"
+            row=4, column=0, columnspan=2, padx=12, pady=(0, 12), sticky="ew"
         )
         self._add_tooltip(
             self.save_settings_button, "Save your API keys and configuration."
+        )
+        ctk.CTkLabel(tab, text="Saved model profiles").grid(
+            row=5, column=0, columnspan=2, padx=12, pady=(0, 4), sticky="w"
+        )
+        profiles_frame = ctk.CTkFrame(tab, fg_color="transparent")
+        profiles_frame.grid(
+            row=6, column=0, columnspan=2, padx=12, pady=(0, 8), sticky="ew"
+        )
+        profiles_frame.grid_columnconfigure(0, weight=1)
+        self.saved_profiles_count = ctk.CTkLabel(
+            profiles_frame, text="Saved profiles: 0", anchor="w"
+        )
+        self.saved_profiles_count.grid(
+            row=0, column=0, columnspan=2, pady=(0, 4), sticky="w"
+        )
+        self.saved_profile_menu = ctk.CTkComboBox(
+            profiles_frame, values=["No saved profiles"], state="readonly"
+        )
+        self.saved_profile_menu.grid(row=1, column=0, padx=(0, 6), sticky="ew")
+        self._add_tooltip(
+            self.saved_profile_menu,
+            "Profiles saved per engine, model, and tab.",
+        )
+        self.delete_saved_profile_button = ctk.CTkButton(
+            profiles_frame,
+            text="Delete",
+            width=80,
+            command=self._delete_saved_profile,
+        )
+        self.delete_saved_profile_button.grid(row=1, column=1, sticky="e")
+        self._add_tooltip(
+            self.delete_saved_profile_button,
+            "Delete the selected saved model profile.",
+        )
+        self.saved_profiles_status = ctk.CTkLabel(
+            profiles_frame, text="", anchor="w"
+        )
+        self.saved_profiles_status.grid(
+            row=2, column=0, columnspan=2, pady=(4, 0), sticky="w"
         )
         self.settings_status = ctk.CTkLabel(tab, text="")
         self.settings_status.grid(
             row=13, column=0, columnspan=2, padx=12, pady=(0, 12), sticky="e"
         )
+        self._refresh_saved_profiles()
 
         ctk.CTkLabel(tab, text="Add a camera / lens").grid(
             row=7, column=0, padx=12, pady=(12, 4), sticky="w"
@@ -399,6 +453,13 @@ class SettingsTabMixin:
     def _load_settings(self):
         self.gemini_key_entry.insert(0, self.config_data.get("gemini_api_key", ""))
         self.groq_key_entry.insert(0, self.config_data.get("groq_api_key", ""))
+        base_url = self.config_data.get(
+            "lm_studio_base_url", DEFAULT_LM_STUDIO_BASE_URL
+        )
+        if not isinstance(base_url, str) or not base_url.strip():
+            base_url = DEFAULT_LM_STUDIO_BASE_URL
+        self.lm_studio_url_entry.insert(0, base_url.strip())
+        self._refresh_saved_profiles()
         legacy_engine = self.config_data.get("engine", "Gemini")
         if legacy_engine not in LLM_ENGINES:
             legacy_engine = "Gemini"
@@ -476,9 +537,13 @@ class SettingsTabMixin:
             provider: self.generator_selected_models.get(provider, "")
             for provider in LLM_ENGINES
         }
+        base_url = self.lm_studio_url_entry.get().strip()
+        if not base_url:
+            base_url = DEFAULT_LM_STUDIO_BASE_URL
         self.config_data = {
             "gemini_api_key": self.gemini_key_entry.get().strip(),
             "groq_api_key": self.groq_key_entry.get().strip(),
+            "lm_studio_base_url": base_url,
             "engine": generator_engine,
             "selected_api_model": generator_model,
             "selected_api_models": legacy_selected_models,
@@ -504,6 +569,59 @@ class SettingsTabMixin:
             )
             return
         self.settings_status.configure(text="Settings saved", text_color="green")
+        self.after(200, self._refresh_lm_studio_status)
+
+    def _refresh_saved_profiles(self):
+        entries = list_profiles()
+        self._saved_profile_entries = entries
+        self.saved_profiles_count.configure(
+            text=f"Saved profiles: {len(entries)}"
+        )
+        labels = [
+            (
+                f"{entry['engine']} · {entry['model_id']} · "
+                f"{'Image' if entry['mode'] == 'vision' else 'Text'}"
+            )
+            for entry in entries
+        ]
+        self.saved_profile_menu.configure(
+            values=labels or ["No saved profiles"]
+        )
+        current = self.saved_profile_menu.get()
+        fallback = labels[0] if labels else "No saved profiles"
+        self.saved_profile_menu.set(current if current in labels else fallback)
+        self.delete_saved_profile_button.configure(
+            state="normal" if entries else "disabled"
+        )
+
+    def _delete_saved_profile(self):
+        labels = list(self.saved_profile_menu.cget("values"))
+        selection = self.saved_profile_menu.get()
+        if selection not in labels or not self._saved_profile_entries:
+            self.saved_profiles_status.configure(
+                text="Select a saved profile to delete.", text_color="red"
+            )
+            return
+        entry = self._saved_profile_entries[labels.index(selection)]
+        mode_label = "Image to Prompt" if entry["mode"] == "vision" else "Generator"
+        if not messagebox.askyesno(
+            "Confirm Delete",
+            f"Delete the {mode_label} profile for '{entry['model_id']}'?",
+            parent=self,
+        ):
+            return
+        try:
+            delete_profile(entry["engine"], entry["model_id"], entry["mode"])
+        except (OSError, ValueError) as error:
+            self.saved_profiles_status.configure(
+                text=f"Could not delete profile: {error}", text_color="red"
+            )
+            return
+        self._refresh_saved_profiles()
+        self._refresh_profile(entry["mode"], sync_temperature=True)
+        self.saved_profiles_status.configure(
+            text="Profile deleted.", text_color="green"
+        )
 
     def _add_camera(self):
         camera = self.camera_entry.get().strip()

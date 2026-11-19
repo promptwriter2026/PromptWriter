@@ -63,7 +63,7 @@ class ModelSelectorMixin:
         menu.set(selected_model)
         selected_models[engine] = selected_model
 
-    def _on_engine_changed(self, engine):
+    def _on_engine_changed(self, engine, sync_profile=None):
         self._set_api_model_options("generator", engine)
         self._update_lm_studio_controls(
             engine,
@@ -71,22 +71,24 @@ class ModelSelectorMixin:
             self.generator_clear_vram_button,
             self.generator_lm_studio_status_label,
         )
+        self._refresh_profile("text", sync_temperature=sync_profile)
         self.after(200, self._refresh_lm_studio_status)
 
     def _on_generator_engine_selected(self, engine):
-        self._on_engine_changed(engine)
+        self._on_engine_changed(engine, sync_profile=True)
         self.update_engine_color()
 
     def _on_image_engine_selected(self, engine):
-        self._on_image_engine_changed(engine)
+        self._on_image_engine_changed(engine, sync_profile=True)
         self.update_engine_color()
 
     def _on_api_model_changed(self, model):
         engine = self.engine_menu.get()
         if model and model != "Fetch models first":
             self.generator_selected_models[engine] = model
+        self._refresh_profile("text", sync_temperature=True)
 
-    def _on_image_engine_changed(self, engine):
+    def _on_image_engine_changed(self, engine, sync_profile=None):
         self._set_api_model_options("vision", engine)
         self._update_lm_studio_controls(
             engine,
@@ -94,12 +96,14 @@ class ModelSelectorMixin:
             self.image_clear_vram_button,
             self.image_lm_studio_status_label,
         )
+        self._refresh_profile("vision", sync_temperature=sync_profile)
         self.after(200, self._refresh_lm_studio_status)
 
     def _on_image_api_model_changed(self, model):
         engine = self.image_engine_menu.get()
         if model and model != "Fetch models first":
             self.vision_selected_models[engine] = model
+        self._refresh_profile("vision", sync_temperature=True)
 
     def _fetch_available_models(self, context):
         if context == "generator":
@@ -200,8 +204,10 @@ class ModelSelectorMixin:
 
         if self.engine_menu.get() == engine:
             self._set_api_model_options("generator", engine)
+            self._refresh_profile("text", sync_temperature=True)
         if self.image_engine_menu.get() == engine:
             self._set_api_model_options("vision", engine)
+            self._refresh_profile("vision", sync_temperature=True)
         self._set_fetch_buttons_state("normal")
         status_label = (
             self.status_label if context == "generator" else self.image_status_label
@@ -229,6 +235,10 @@ class ModelSelectorMixin:
                 model_list = ["Fetch models first"]
                 menu.configure(values=model_list)
                 menu.set(model_list[0])
+                self._refresh_profile(
+                    "text" if menu is self.api_model_menu else "vision",
+                    sync_temperature=False,
+                )
         status_label = (
             self.status_label if context == "generator" else self.image_status_label
         )

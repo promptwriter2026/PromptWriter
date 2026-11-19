@@ -1,3 +1,4 @@
+import inspect
 import json
 import re
 import tempfile
@@ -9,6 +10,7 @@ import requests
 
 from promptwriter.config import LOCAL_ENGINE
 from promptwriter.services import llm_client, lm_studio_api, model_catalog
+from promptwriter.storage import profile_store
 from promptwriter.services.prompt_builder import (
     VISION_DEFAULT_USER_PROMPT,
     assemble_image_request,
@@ -85,7 +87,6 @@ class PayloadTests(unittest.TestCase):
             chat_response("a prompt"),
             request_text={"system": "SYS", "user": "USER"},
             temperature=0.9,
-            cache_prompt=True,
             base_url="http://127.0.0.1:1234",
         )
         payload = post.call_args.kwargs["json"]
@@ -96,7 +97,7 @@ class PayloadTests(unittest.TestCase):
                 {"role": "user", "content": "USER"},
             ],
         )
-        self.assertEqual(payload["cache_prompt"], True)
+        self.assertNotIn("cache_prompt", payload)
         self.assertEqual(payload["max_tokens"], 2048)
         self.assertEqual(payload["top_p"], 0.95)
         self.assertNotIn("min_p", payload)
@@ -111,7 +112,6 @@ class PayloadTests(unittest.TestCase):
             chat_response("a prompt"),
             request_text={"system": "SYS", "user": "Describe this"},
             image_base64="abc123",
-            cache_prompt=False,
             base_url="http://127.0.0.1:1234",
         )
         messages = post.call_args.kwargs["json"]["messages"]
@@ -133,14 +133,15 @@ class PayloadTests(unittest.TestCase):
             "Groq",
             chat_response("a prompt"),
             request_text={"system": "SYS", "user": "USER"},
-            cache_prompt=True,
             min_p=0.05,
             repeat_penalty=1.1,
+            disable_thinking=True,
         )
         payload = post.call_args.kwargs["json"]
         self.assertNotIn("cache_prompt", payload)
         self.assertNotIn("min_p", payload)
         self.assertNotIn("repeat_penalty", payload)
+        self.assertNotIn("/no_think", payload["messages"][1]["content"])
         self.assertEqual(payload["max_tokens"], 6500)
         self.assertEqual(payload["top_p"], 0.95)
 
@@ -149,19 +150,35 @@ class PayloadTests(unittest.TestCase):
             LOCAL_ENGINE,
             chat_response("a prompt"),
             request_text={"system": "SYS", "user": "USER"},
-            cache_prompt=False,
             min_p=0.05,
             repeat_penalty=1.1,
             top_p=0.5,
             max_tokens=512,
+            disable_thinking=True,
             base_url="http://127.0.0.1:1234",
         )
         payload = post.call_args.kwargs["json"]
-        self.assertEqual(payload["cache_prompt"], False)
+        self.assertNotIn("cache_prompt", payload)
         self.assertEqual(payload["min_p"], 0.05)
         self.assertEqual(payload["repeat_penalty"], 1.1)
         self.assertEqual(payload["top_p"], 0.5)
         self.assertEqual(payload["max_tokens"], 512)
+        self.assertEqual(payload["messages"][1]["content"], "USER\n/no_think")
+
+    def test_disable_thinking_appends_no_think_to_vision_text_part(self):
+        _, post = self._capture(
+            LOCAL_ENGINE,
+            chat_response("a prompt"),
+            request_text={"system": "SYS", "user": "Describe this"},
+            image_base64="abc123",
+            disable_thinking=True,
+            base_url="http://127.0.0.1:1234",
+        )
+        content = post.call_args.kwargs["json"]["messages"][1]["content"]
+        self.assertEqual(
+            content[0], {"type": "text", "text": "Describe this\n/no_think"}
+        )
+        self.assertEqual(content[1]["type"], "image_url")
 
     def test_gemini_uses_system_instruction(self):
         response = FakeResponse(
@@ -506,6 +523,296 @@ class GroqModelFetchTests(unittest.TestCase):
                 ValueError, "Groq returned no available models"
             ):
                 model_catalog.fetch_provider_models("Groq", "secret-key")
+
+
+class ProfileStoreTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.path = Path(self.temp_dir.name) / "model_profiles.json"
+        self.path.write_text("{}", encoding="utf-8")
+        self.path_patch = patch.object(
+            profile_store, "MODEL_PROFILES_PATH", self.path
+        )
+        self.path_patch.start()
+
+    def tearDown(self):
+        self.path_patch.stop()
+        self.temp_dir.cleanup()
+
+    def test_engine_and_mode_defaults(self):
+        gemini_text = profile_store.default_profile("Gemini", "text")
+        self.assertEqual(gemini_text["temperature"], 0.7)
+        self.assertEqual(gemini_text["top_p"], 0.95)
+        self.assertIsNone(gemini_text["max_tokens"])
+        vision_local = profile_store.default_profile(LOCAL_ENGINE, "vision")
+        self.assertEqual(vision_local["temperature"], 0.1)
+        self.assertEqual(vision_local["top_p"], 0.2)
+        self.assertEqual(vision_local["max_tokens"], 2048)
+        self.assertEqual(
+            profile_store.default_profile("Groq", "text")["max_tokens"], 6500
+        )
+        self.assertFalse(vision_local["disable_thinking"])
+
+    def test_save_get_keeps_mode_and_model_profiles_separate(self):
+        saved = profile_store.save_profile(
+            "Gemini",
+            "gemini-test",
+            "text",
+            {"temperature": 0.3, "top_p": 0.9, "max_tokens": 1234},
+        )
+        self.assertEqual(saved["temperature"], 0.3)
+        self.assertEqual(saved["top_p"], 0.9)
+        self.assertEqual(saved["max_tokens"], 1234)
+        self.assertEqual(
+            profile_store.get_profile("Gemini", "gemini-test", "text")["temperature"],
+            0.3,
+        )
+        self.assertEqual(
+            profile_store.get_saved_profile("Gemini", "gemini-test", "text")[
+                "top_p"
+            ],
+            0.9,
+        )
+        self.assertIsNone(
+            profile_store.get_saved_profile("Gemini", "gemini-test", "vision")
+        )
+
+        profile_store.save_profile(
+            "Gemini", "gemini-test", "vision", {"temperature": 0.2}
+        )
+        self.assertEqual(
+            profile_store.get_profile("Gemini", "gemini-test", "vision")[
+                "temperature"
+            ],
+            0.2,
+        )
+        self.assertEqual(
+            profile_store.get_profile("Gemini", "gemini-test", "vision")["top_p"],
+            0.2,
+        )
+        entries = profile_store.list_profiles()
+        self.assertEqual(len(entries), 2)
+        self.assertEqual(
+            {entry["mode"] for entry in entries}, {"text", "vision"}
+        )
+
+    def test_partial_profile_falls_back_to_defaults(self):
+        profile_store.save_profile(
+            "Groq", "qwen-test", "text", {"temperature": 1.1}
+        )
+        profile = profile_store.get_profile("Groq", "qwen-test", "text")
+        self.assertEqual(profile["temperature"], 1.1)
+        self.assertEqual(profile["top_p"], 0.95)
+        self.assertEqual(profile["max_tokens"], 6500)
+
+    def test_delete_profile_and_list(self):
+        profile_store.save_profile(
+            LOCAL_ENGINE, "model-a", "text", {"context_length": 8192}
+        )
+        self.assertEqual(len(profile_store.list_profiles()), 1)
+        self.assertTrue(
+            profile_store.delete_profile(LOCAL_ENGINE, "model-a", "text")
+        )
+        self.assertEqual(profile_store.list_profiles(), [])
+        self.assertFalse(
+            profile_store.delete_profile(LOCAL_ENGINE, "model-a", "text")
+        )
+
+    def test_profile_summary(self):
+        default = profile_store.default_profile(LOCAL_ENGINE, "text")
+        self.assertEqual(
+            profile_store.format_profile_summary(
+                LOCAL_ENGINE, default, False
+            ),
+            "Default profile",
+        )
+        saved = dict(default)
+        saved.update(
+            {
+                "context_length": 8192,
+                "max_tokens": 2048,
+                "top_p": 0.95,
+                "min_p": 0.05,
+            }
+        )
+        summary = profile_store.format_profile_summary(
+            LOCAL_ENGINE, saved, True, temperature=0.55
+        )
+        self.assertIn("Temp: 0.55", summary)
+        self.assertIn("Ctx: 8192", summary)
+        self.assertIn("Max: 2048", summary)
+        self.assertIn("Top-P: 0.95", summary)
+        self.assertIn("Min-P: 0.05", summary)
+
+
+class ProfileInjectionTests(unittest.TestCase):
+    def _profile(self, engine, mode, **overrides):
+        profile = profile_store.default_profile(engine, mode)
+        profile.update(overrides)
+        return profile
+
+    def test_cache_prompt_is_removed_from_client_signature(self):
+        signature = inspect.signature(llm_client.request_generated_prompt)
+        self.assertNotIn("cache_prompt", signature.parameters)
+
+    def test_local_profile_injects_all_sampling_fields(self):
+        profile = self._profile(
+            LOCAL_ENGINE,
+            "text",
+            temperature=0.8,
+            top_p=0.5,
+            min_p=0.05,
+            repeat_penalty=1.1,
+            max_tokens=1024,
+            disable_thinking=True,
+        )
+        kwargs = profile_store.profile_request_kwargs(LOCAL_ENGINE, profile)
+        with patch.object(
+            llm_client.requests, "post", return_value=chat_response("a prompt")
+        ) as post:
+            llm_client.request_generated_prompt(
+                LOCAL_ENGINE,
+                "key",
+                "local-model",
+                "USER",
+                base_url="http://127.0.0.1:1234",
+                **kwargs,
+            )
+        payload = post.call_args.kwargs["json"]
+        self.assertEqual(payload["temperature"], 0.8)
+        self.assertEqual(payload["top_p"], 0.5)
+        self.assertEqual(payload["min_p"], 0.05)
+        self.assertEqual(payload["repeat_penalty"], 1.1)
+        self.assertEqual(payload["max_tokens"], 1024)
+        self.assertNotIn("cache_prompt", payload)
+        self.assertTrue(payload["messages"][-1]["content"].endswith("/no_think"))
+
+    def test_groq_profile_omits_local_only_fields(self):
+        profile = self._profile(
+            "Groq",
+            "text",
+            temperature=0.6,
+            top_p=0.7,
+            max_tokens=700,
+            min_p=0.05,
+            repeat_penalty=1.2,
+            disable_thinking=True,
+        )
+        kwargs = profile_store.profile_request_kwargs("Groq", profile)
+        self.assertEqual(set(kwargs), {"temperature", "top_p", "max_tokens"})
+        with patch.object(
+            llm_client.requests, "post", return_value=chat_response("a prompt")
+        ) as post:
+            llm_client.request_generated_prompt(
+                "Groq", "key", "groq-model", "USER", **kwargs
+            )
+        payload = post.call_args.kwargs["json"]
+        self.assertEqual(payload["temperature"], 0.6)
+        self.assertEqual(payload["top_p"], 0.7)
+        self.assertEqual(payload["max_tokens"], 700)
+        self.assertNotIn("min_p", payload)
+        self.assertNotIn("repeat_penalty", payload)
+        self.assertNotIn("cache_prompt", payload)
+        self.assertEqual(payload["messages"][-1]["content"], "USER")
+
+    def test_gemini_profile_maps_top_p_and_max_tokens(self):
+        profile = self._profile(
+            "Gemini", "text", temperature=0.4, top_p=0.8, max_tokens=1024
+        )
+        kwargs = profile_store.profile_request_kwargs("Gemini", profile)
+        response = FakeResponse(
+            {
+                "candidates": [
+                    {"content": {"parts": [{"text": "a prompt"}]}}
+                ]
+            }
+        )
+        with patch.object(
+            llm_client.requests, "post", return_value=response
+        ) as post:
+            llm_client.request_generated_prompt(
+                "Gemini", "key", "gemini-model", "USER", **kwargs
+            )
+        generation_config = post.call_args.kwargs["json"]["generationConfig"]
+        self.assertEqual(generation_config["temperature"], 0.4)
+        self.assertEqual(generation_config["topP"], 0.8)
+        self.assertEqual(generation_config["maxOutputTokens"], 1024)
+
+
+class EnsureModelLoadedTests(unittest.TestCase):
+    def test_loads_model_when_context_length_is_set_and_model_is_unloaded(self):
+        models = FakeResponse(
+            {
+                "models": [
+                    {
+                        "key": "local-model",
+                        "display_name": "Local Model",
+                        "loaded_instances": [],
+                    }
+                ]
+            }
+        )
+        with patch.object(
+            lm_studio_api.requests, "get", return_value=models
+        ) as get, patch.object(
+            lm_studio_api.requests, "post", return_value=FakeResponse({})
+        ) as post:
+            loaded = lm_studio_api.ensure_model_loaded(
+                "local-model", context_length=8192, base_url="http://host:1234"
+            )
+        self.assertTrue(loaded)
+        self.assertEqual(get.call_args.args[0], "http://host:1234/api/v1/models")
+        self.assertEqual(
+            post.call_args.args[0], "http://host:1234/api/v1/models/load"
+        )
+        self.assertEqual(
+            post.call_args.kwargs["json"],
+            {"model_key": "local-model", "context_length": 8192},
+        )
+
+    def test_skips_load_when_model_instance_is_present(self):
+        models = FakeResponse(
+            {
+                "models": [
+                    {
+                        "key": "local-model",
+                        "display_name": "Local Model",
+                        "loaded_instances": [{"id": "instance-1"}],
+                    }
+                ]
+            }
+        )
+        with patch.object(
+            lm_studio_api.requests, "get", return_value=models
+        ), patch.object(lm_studio_api.requests, "post") as post:
+            loaded = lm_studio_api.ensure_model_loaded(
+                "local-model", context_length=8192, base_url="http://host:1234"
+            )
+        self.assertFalse(loaded)
+        post.assert_not_called()
+
+    def test_matches_display_name_and_omits_context_for_auto(self):
+        models = FakeResponse(
+            {
+                "models": [
+                    {
+                        "key": "vendor/model",
+                        "display_name": "local-model",
+                        "loaded_instances": [],
+                    }
+                ]
+            }
+        )
+        with patch.object(
+            lm_studio_api.requests, "get", return_value=models
+        ), patch.object(
+            lm_studio_api.requests, "post", return_value=FakeResponse({})
+        ) as post:
+            loaded = lm_studio_api.ensure_model_loaded(
+                "local-model", context_length=None, base_url="http://host:1234"
+            )
+        self.assertTrue(loaded)
+        self.assertEqual(post.call_args.kwargs["json"], {"model_key": "local-model"})
 
 
 if __name__ == "__main__":

@@ -19,6 +19,7 @@ from promptwriter.ui.history_tab import HistoryTabMixin
 from promptwriter.ui.image_tab import ImagePromptTabMixin
 from promptwriter.ui.lm_studio_panel import LMStudioMixin
 from promptwriter.ui.model_selector import ModelSelectorMixin
+from promptwriter.ui.profile_ui import ProfileMixin
 from promptwriter.ui.settings_tab import SettingsTabMixin
 from promptwriter.ui.text_actions import TextActionsMixin
 from promptwriter.ui.tooltip import ToolTip
@@ -30,6 +31,7 @@ class PromptGeneratorApp(
     SettingsTabMixin,
     HistoryTabMixin,
     ModelSelectorMixin,
+    ProfileMixin,
     LMStudioMixin,
     TextActionsMixin,
     ctk.CTk,
@@ -57,11 +59,15 @@ class PromptGeneratorApp(
         self.generator_temp_var = tkinter.DoubleVar(master=self, value=0.7)
         self.vision_temp_var = tkinter.DoubleVar(master=self, value=0.1)
         self.auto_unload_var = tkinter.BooleanVar(master=self, value=False)
-        self.generator_cache_var = tkinter.BooleanVar(master=self, value=True)
-        self.vision_cache_var = tkinter.BooleanVar(master=self, value=True)
         self.force_single_line_var = tkinter.BooleanVar(master=self, value=True)
+        self.generator_profile = {}
+        self.vision_profile = {}
+        self.generator_profile_saved = False
+        self.vision_profile_saved = False
+        self._profiles_sync_enabled = False
         self._lm_studio_unload_lock = threading.Lock()
         self._lm_studio_status_check_in_progress = False
+        self._closing = False
         self.saved_generator_api_model = None
         self.saved_generator_api_engine = None
         self.saved_vision_api_model = None
@@ -77,8 +83,12 @@ class PromptGeneratorApp(
         self._load_settings()
         self.load_ui_state()
         self._refresh_history()
-        self._on_generator_engine_selected(self.engine_menu.get())
-        self._on_image_engine_selected(self.image_engine_menu.get())
+        self._on_engine_changed(self.engine_menu.get())
+        self._on_image_engine_changed(self.image_engine_menu.get())
+        self.update_engine_color()
+        self._profiles_sync_enabled = True
+        self._refresh_profile("text", sync_temperature=False)
+        self._refresh_profile("vision", sync_temperature=False)
         self.after(200, self._refresh_lm_studio_status)
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
 
@@ -92,7 +102,7 @@ class PromptGeneratorApp(
         self.grid_rowconfigure(0, weight=1)
 
         self.tabs = ctk.CTkTabview(self)
-        self.tabs.grid(row=0, column=0, padx=20, pady=20, sticky="nsew")
+        self.tabs.grid(row=0, column=0, padx=20, pady=12, sticky="nsew")
 
         self.generator_tab = self.tabs.add("Generator")
         self.image_prompt_tab = self.tabs.add("Image to Prompt")
@@ -186,7 +196,6 @@ class PromptGeneratorApp(
                 "camera": self.camera_menu.get(),
                 "generator_lora": self.lora_menu.get(),
                 "temperature": self.generator_temp_var.get(),
-                "cache_prompt": self.generator_cache_var.get(),
             },
             "image_prompt": {
                 "engine": self.image_engine_menu.get(),
@@ -194,7 +203,6 @@ class PromptGeneratorApp(
                 "target_model": self.image_target_model_menu.get(),
                 "vision_lora": self.image_lora_menu.get(),
                 "temperature": self.vision_temp_var.get(),
-                "cache_prompt": self.vision_cache_var.get(),
             },
         }
 
@@ -278,14 +286,6 @@ class PromptGeneratorApp(
                 variable.set(temperature)
                 update_label()
 
-        for state, variable in (
-            (generator_state, self.generator_cache_var),
-            (image_state, self.vision_cache_var),
-        ):
-            cache_prompt = state.get("cache_prompt")
-            if isinstance(cache_prompt, bool):
-                variable.set(cache_prompt)
-
         generator_engine = self.engine_menu.get()
         image_engine = self.image_engine_menu.get()
         generator_api_model = generator_state.get("api_model")
@@ -303,6 +303,7 @@ class PromptGeneratorApp(
         self._on_image_engine_changed(image_engine)
 
     def on_closing(self):
+        self._closing = True
         self._save_rough_idea()
         self.save_ui_state()
         self.destroy()

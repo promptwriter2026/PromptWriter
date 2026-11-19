@@ -24,3 +24,4 @@ rough_idea_cache.txt
 # Personal user data (regenerated with empty defaults at startup)
 data/cameras.json
 data/lora_profiles.json
+data/model_profiles.json

@@ -1,4 +1,5 @@
 import threading
+import tkinter
 from urllib.parse import urlparse
 
 import requests
@@ -51,7 +52,25 @@ class LMStudioMixin:
         state = "normal" if engine == LOCAL_ENGINE else "disabled"
         auto_unload_checkbox.configure(state=state)
         clear_vram_button.configure(state=state)
-        status_label.configure(state=state)
+        if engine == LOCAL_ENGINE:
+            auto_unload_checkbox.grid()
+            clear_vram_button.grid()
+            status_label.grid()
+            status_label.configure(state="normal")
+        else:
+            auto_unload_checkbox.grid_remove()
+            clear_vram_button.grid_remove()
+            status_label.grid_remove()
+        if hasattr(self, "_sync_generator_controls_height"):
+            self.after_idle(self._sync_generator_controls_height)
+
+    def _schedule_ui(self, delay, callback, *args):
+        if getattr(self, "_closing", False):
+            return
+        try:
+            self.after(delay, callback, *args)
+        except (RuntimeError, tkinter.TclError):
+            pass
 
     def _has_local_engine_selected(self):
         return (
@@ -84,7 +103,9 @@ class LMStudioMixin:
         except (requests.exceptions.RequestException, ValueError) as error:
             status = describe_lm_studio_error(error)
             color = "red"
-        self.after(0, self._finish_lm_studio_status_refresh, status, color)
+        self._schedule_ui(
+            0, self._finish_lm_studio_status_refresh, status, color
+        )
 
     def _finish_lm_studio_status_refresh(self, status, color):
         status_text = format_lm_studio_status(status)
@@ -96,7 +117,9 @@ class LMStudioMixin:
         )
         self.after_idle(self._sync_generator_controls_height)
         self._lm_studio_status_check_in_progress = False
-        if self._has_local_engine_selected():
+        if self._has_local_engine_selected() and not getattr(
+            self, "_closing", False
+        ):
             self.after(4000, self._refresh_lm_studio_status)
 
     def _clear_lm_studio_vram(self):
@@ -119,7 +142,7 @@ class LMStudioMixin:
         except (requests.exceptions.RequestException, ValueError) as error:
             status = f"Unload failed: {describe_lm_studio_error(error)}"
             color = "red"
-        self.after(0, self._finish_lm_studio_unload, status, color)
+        self._schedule_ui(0, self._finish_lm_studio_unload, status, color)
 
     def _finish_lm_studio_unload(self, status, color):
         self._set_lm_studio_status(status, color)
@@ -150,9 +173,9 @@ class LMStudioMixin:
         try:
             with self._lm_studio_unload_lock:
                 unload_lm_studio_models()
-            self.after(0, self._refresh_lm_studio_status)
+            self._schedule_ui(0, self._refresh_lm_studio_status)
         except (requests.exceptions.RequestException, ValueError) as error:
-            self.after(
+            self._schedule_ui(
                 0,
                 self._set_lm_studio_status,
                 f"Unload failed: {describe_lm_studio_error(error)}",

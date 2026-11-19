@@ -13,6 +13,7 @@ Build a modular Python desktop application with a CustomTkinter interface that e
 - `system_prompts/`: Model-specific instructions, loaded from `.txt` files.
 - `data/cameras.json`: Camera and lens choices.
 - `data/lora_profiles.json`: Character/LoRA profiles.
+- `data/model_profiles.json`: Per-model sampling/context profiles (ignored user runtime data).
 - `data/history.db`: Generated prompt history in SQLite.
 
 ## Implemented Features
@@ -97,7 +98,7 @@ Build a modular Python desktop application with a CustomTkinter interface that e
 ## SQLite History Updates
 - Replaced JSON history storage with `data/history.db`; old `data/history.json` was deleted without data migration as requested.
 - The `generations` table schema is: `id INTEGER PRIMARY KEY AUTOINCREMENT`, `timestamp TEXT`, `source_tab TEXT`, `rough_idea TEXT`, `generated_prompt TEXT`, `engine TEXT`, `model TEXT`, `is_favorite INTEGER DEFAULT 0`, `image_path TEXT`, and `settings_json TEXT`.
-- Successful Generator and Image to Prompt generations insert directly into SQLite. `settings_json` contains generation parameters including temperature, cache preference, LoRA, and auto-unload; image records also store their image path.
+- Successful Generator and Image to Prompt generations insert directly into SQLite. `settings_json` contains generation parameters including temperature, profile sampling settings, LoRA, and auto-unload; image records also store their image path.
 - Added a shared, enabled-by-default “Enforce Single-Line Prompts” checkbox to Generator and Image to Prompt. When enabled, successful callbacks collapse wrapped lines within paragraphs before both display and SQLite persistence; `settings_json` records the `force_single_line` preference.
 - The History content panel now uses “Generated Prompts” and “Original Idea” tabs. “Load back to Generator” restores the original idea and switches to Generator.
 - The History list queries only the newest 50 rows, loads prompt bodies only when an entry is selected, formats timestamps and topic snippets, and shows the complete original idea in each button's tooltip.
@@ -108,7 +109,7 @@ Build a modular Python desktop application with a CustomTkinter interface that e
 - Gemini receives the same split through `system_instruction`, with the user text and `inline_data` image in `contents`.
 - Reasoning cleanup is centralized in `llm_client.py` and runs before LoRA trigger-prefix enforcement. It strips `<think>`, `<thinking>`, and `<|think|>` blocks case-insensitively, removes unclosed opening tags (truncated output), and raises a clear error when only reasoning remains.
 - When LM Studio returns empty `message.content` with a populated `reasoning_content`, the client reports that the output budget was consumed by reasoning and suggests increasing `max_tokens` or disabling thinking mode.
-- `request_generated_prompt` accepts optional `top_p`, `min_p`, `repeat_penalty`, and `max_tokens`. Defaults preserve current behavior (top_p 0.95/0.2, Groq 6500 tokens, Local 2048); `min_p`, `repeat_penalty`, and `cache_prompt` are sent only to Local and only when explicitly provided.
+- `request_generated_prompt` accepts optional `top_p`, `min_p`, `repeat_penalty`, and `max_tokens`. Defaults preserve current behavior (top_p 0.95/0.2, Groq 6500 tokens, Local 2048); `min_p` and `repeat_penalty` are sent only to Local and only when explicitly provided.
 - Added `load_model(model_key, context_length=None, base_url=None)` for the native `POST /api/v1/models/load` endpoint, ready for the Phase 2 profile system; JIT auto-load behavior is unchanged.
 - The LM Studio base URL is configurable via `lm_studio_base_url` in `config.json` (default `http://127.0.0.1:1234`) and is used by generation, model listing, status, and unload.
 - Empty-choices errors now report the active engine instead of always naming Groq.
@@ -120,7 +121,19 @@ Build a modular Python desktop application with a CustomTkinter interface that e
 - Added five unit tests covering filter ordering/deduplication, blacklist and modality exclusions, a mocked Fetch call (URL and auth header, no key in URL), and the empty-result error. All 28 tests pass.
 - Live verification against Groq returned 4 usable models: `openai/gpt-oss-20b`, `openai/gpt-oss-120b`, `qwen/qwen3.8-27b` (text + image input), and `allam-2-7b`.
 
+## Model Profiles & Settings (Phase 2)
+- Removed local prompt caching entirely: the “Enable Local Prompt Caching” checkbox, variables, callbacks, config persistence, and the `cache_prompt` request field are gone; tests assert it never appears in payloads or the client signature.
+- Added `promptwriter/storage/profile_store.py` backed by `data/model_profiles.json` (git-ignored). Profiles are keyed by `(engine, model_id, mode)` so text and vision settings stay separate. Fields: `temperature`, `top_p`, `min_p` (Local), `repeat_penalty` (Local), `max_tokens`, `context_length` (Local, `None` = Auto), `disable_thinking`. Missing fields fall back to engine/mode defaults (text 0.7/0.95, vision 0.1/0.2, Groq 6500 / Local 2048 max tokens).
+- Added a compact `⚙` button beside Fetch on both tabs and a one-line profile summary (`Default profile` or e.g. `Temp: 0.60 · Ctx: 8192 · Max: 4096 · Top-P: 0.9 · Min-P: 0.05`). Switching engine, model, or profile reloads the saved profile and syncs the Temp slider.
+- Added a modal `Model Profile: <model>` dialog with Temperature, Top-P, Min-P, Repeat Penalty, Max Tokens, Context Length (`Auto`/`4096`/`8192`/`16384`/`32768`), and Disable Thinking, plus Reset to Default / Save Profile / Cancel. Local-only fields are hidden for Gemini and Groq, replaced by a short explanatory note.
+- `disable_thinking` is implemented for Local by appending `/no_think` to the user message text. This is plain text to non-reasoning models, so it cannot trigger chat-template or unknown-token HTTP 400 errors; it is never sent to Gemini or Groq.
+- Explicit `context_length` values are honored before Local generation: `/api/v1/models` is checked, and an unloaded model is loaded via `POST /api/v1/models/load` with that context size. `Auto` keeps the existing JIT behavior and sends no context value.
+- Settings now includes an editable LM Studio base URL (`lm_studio_base_url`, default `http://127.0.0.1:1234`) and a Saved model profiles section with a count, readonly list, and Delete action. Deleting the active profile refreshes both tabs and their Temp sliders.
+- UI cleanup: the “Enforce Single-Line Prompts” checkbox moved beside the “Generated prompt” / “Output Prompt” header, and menu/control spacing was tightened on both tabs so Local-only controls and the Copy button fit without clipping at 780×600. LM Studio status, auto-unload, and Unload controls are hidden (not just disabled) for Gemini/Groq.
+- Verified all four tabs and both profile dialogs (text and vision) at 1000×760 and 780×600 in Gemini and Local states, including output/copy geometry. All 41 unit tests pass.
+
 ## Version History
+- 2026-11-19 — v2.2.0: Model profiles and Settings phase. Removed local prompt caching completely; added per-`(engine, model, mode)` profiles in `data/model_profiles.json` with a compact `⚙` dialog and live summary; wired `context_length` to pre-load unloaded Local models; added the LM Studio base URL and Saved Profiles management to Settings; implemented Local `disable_thinking` via a non-breaking `/no_think` suffix; relocated the Single-Line checkbox and tightened both generation tabs for clean 780×600 rendering. All 41 tests pass.
 - 2026-11-19 — v2.1.1: Fixed Groq model Fetch failing with "Groq returned no available models". The refactor dropped `filter_groq_models`'s return statement; restored it and added modality-based filtering so Whisper/TTS models are excluded while chat and vision-capable models are kept. Added five regression tests; all 28 tests pass.
 - 2026-11-19 — v2.1.0: Backend and API modernization (Phase 1). System/user role separation for Groq, Local, and Gemini; centralized reasoning cleanup with unclosed-tag and `reasoning_content` handling; extensible sampling parameters with Local-only llama.cpp fields; native `load_model` helper; configurable `lm_studio_base_url`; engine-correct error messages; and a 23-test unit suite. No UI layout changes.
 - 2026-11-19 — v2.0.1: Fixed Generator layout corruption when LM Studio is offline. Raw `HTTPConnectionPool` errors are now formatted as short messages (`Offline — cannot connect to 127.0.0.1:1234`, `Timed out (...)`, `HTTP <code> (...)`), both tabs use equal `uniform` column weights so a long status can never push the right column off-screen, the status labels wrap to their column width, and the Generator controls row is held at its measured height (including padding) so the LM Studio status label is no longer clipped above Generate Prompt. Verified offline rendering at 1000×760 and 780×600, including a forced over-long status string.

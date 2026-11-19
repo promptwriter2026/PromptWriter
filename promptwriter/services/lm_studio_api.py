@@ -36,6 +36,37 @@ def get_lm_studio_loaded_models(base_url=None):
     return loaded_models
 
 
+def ensure_model_loaded(model_key, context_length=None, base_url=None):
+    """Load the model when it has no loaded instance; return True if loaded."""
+    if not isinstance(model_key, str) or not model_key.strip():
+        raise ValueError("A model key is required to check an LM Studio model.")
+    model_key = model_key.strip()
+
+    response = requests.get(f"{_base_url(base_url)}/api/v1/models", timeout=5)
+    response.raise_for_status()
+    response_data = response.json()
+    if not isinstance(response_data, dict) or not isinstance(
+        response_data.get("models"), list
+    ):
+        raise ValueError("LM Studio returned an invalid models response.")
+
+    for model in response_data["models"]:
+        if not isinstance(model, dict):
+            continue
+        identifiers = {
+            model.get("key"),
+            model.get("display_name"),
+        }
+        if model_key not in identifiers:
+            continue
+        instances = model.get("loaded_instances")
+        if isinstance(instances, list) and instances:
+            return False
+
+    load_model(model_key, context_length=context_length, base_url=base_url)
+    return True
+
+
 def load_model(model_key, context_length=None, base_url=None, timeout=120):
     if not isinstance(model_key, str) or not model_key.strip():
         raise ValueError("A model key is required to load an LM Studio model.")

@@ -9,6 +9,7 @@ CONFIG_PATH = APP_DIR / "config.json"
 ROUGH_IDEA_CACHE_PATH = APP_DIR / "rough_idea_cache.txt"
 CAMERAS_PATH = DATA_DIR / "cameras.json"
 LORA_PROFILES_PATH = DATA_DIR / "lora_profiles.json"
+MODEL_PROFILES_PATH = DATA_DIR / "model_profiles.json"
 HISTORY_DB_PATH = DATA_DIR / "history.db"
 BOOTSTRAP_PROMPT_PATH = APP_DIR / "defaults" / "Flux-2-Klein.txt"
 VISION_BOOTSTRAP_PROMPT_PATH = APP_DIR / "defaults" / "Vision-Default.txt"
@@ -65,6 +66,7 @@ DEFAULT_CONFIG = {
 DEFAULT_JSON_FILES = {
     CAMERAS_PATH: [],
     LORA_PROFILES_PATH: [],
+    MODEL_PROFILES_PATH: {},
 }
 
 
