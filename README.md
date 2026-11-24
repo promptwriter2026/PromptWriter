@@ -103,8 +103,7 @@ system prompt folders inside `dist\PWLP\_internal`.
 
 ## Support
 
-PWLP is free and has no paid tiers. If it is useful to you, you can support
-development on Ko-fi: <https://ko-fi.com/promptwriter>
+PWLP is 100% free with no limits or paid tiers. Supporting development on Ko-fi is completely voluntary and does not unlock any extra features or perks — if it is useful to you, you can support the project here: https://ko-fi.com/promptwriter
 
 ## License and disclaimer
 
