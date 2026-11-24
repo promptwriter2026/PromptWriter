@@ -1,4 +1,6 @@
+from promptwriter.config import MODEL_PLACEHOLDER
 from promptwriter.storage.profile_store import (
+    TEMPERATURE_MAX,
     default_profile,
     delete_profile,
     format_profile_summary,
@@ -26,7 +28,7 @@ class ProfileMixin:
             "model_menu": self.api_model_menu,
             "temperature_var": self.generator_temp_var,
             "temperature_label": self.generator_temp_label,
-            "temperature_max": 1.5,
+            "temperature_max": TEMPERATURE_MAX,
             "summary_label": self.generator_profile_label,
             "status_label": self.status_label,
         }
@@ -35,7 +37,7 @@ class ProfileMixin:
         context = self._profile_context(mode)
         engine = context["engine_menu"].get()
         model_id = context["model_menu"].get().strip()
-        if not model_id or model_id == "Fetch models first":
+        if not model_id or model_id == MODEL_PLACEHOLDER:
             return default_profile(engine, mode), False
         saved = get_saved_profile(engine, model_id, mode)
         return merge_profile(saved, engine, mode), saved is not None
@@ -104,7 +106,7 @@ class ProfileMixin:
         context = self._profile_context(mode)
         engine = context["engine_menu"].get()
         model_id = context["model_menu"].get().strip()
-        if not model_id or model_id == "Fetch models first":
+        if not model_id or model_id == MODEL_PLACEHOLDER:
             context["status_label"].configure(
                 text=f"Select an {engine} model before editing its profile.",
                 text_color="red",

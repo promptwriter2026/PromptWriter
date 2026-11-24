@@ -1,3 +1,5 @@
+import ctypes
+import sys
 import threading
 import tkinter
 from tkinter import messagebox
@@ -6,6 +8,7 @@ import customtkinter as ctk
 from tkinterdnd2 import TkinterDnD
 
 from promptwriter.config import (
+    APP_ICON_PATH,
     CAMERAS_PATH,
     LORA_PROFILES_PATH,
     SYSTEM_PROMPTS_DIR,
@@ -14,7 +17,9 @@ from promptwriter.config import (
 from promptwriter.services.lora import lora_profile_value
 from promptwriter.storage.app_files import ensure_app_files, read_json
 from promptwriter.storage.config_store import load_config, save_config
+from promptwriter.storage.profile_store import TEMPERATURE_MAX
 from promptwriter.ui.generator_tab import GeneratorTabMixin
+from promptwriter.ui.help_tab import HelpTabMixin
 from promptwriter.ui.history_tab import HistoryTabMixin
 from promptwriter.ui.image_tab import ImagePromptTabMixin
 from promptwriter.ui.lm_studio_panel import LMStudioMixin
@@ -26,11 +31,23 @@ from promptwriter.ui.tooltip import ToolTip
 from promptwriter.ui.vram_ui import VRAMMixin
 
 
+def _set_windows_app_user_model_id():
+    if sys.platform != "win32":
+        return
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            "PromptWriter.Desktop"
+        )
+    except (AttributeError, OSError):
+        pass
+
+
 class PromptGeneratorApp(
     GeneratorTabMixin,
     ImagePromptTabMixin,
     SettingsTabMixin,
     HistoryTabMixin,
+    HelpTabMixin,
     ModelSelectorMixin,
     ProfileMixin,
     LMStudioMixin,
@@ -40,11 +57,13 @@ class PromptGeneratorApp(
     TkinterDnD.DnDWrapper,
 ):
     def __init__(self):
+        _set_windows_app_user_model_id()
         super().__init__()
         self.TkdndVersion = TkinterDnD._require(self)
         ensure_app_files()
 
-        self.title("PromptWriter")
+        self.title("PWLP — Prompt Writer for Lazy People")
+        self._apply_window_icon()
         self.geometry("1000x760")
         self.minsize(780, 600)
 
@@ -56,8 +75,9 @@ class PromptGeneratorApp(
         self.history_selection_id = None
         self.history_records = []
         self._copy_feedback_after_ids = {}
+        self._copy_button_defaults = {}
+        self._copy_status_defaults = {}
         self.tooltips = []
-        self._history_row_tooltips = []
         self.generator_temp_var = tkinter.DoubleVar(master=self, value=0.7)
         self.vision_temp_var = tkinter.DoubleVar(master=self, value=0.1)
         self.auto_unload_var = tkinter.BooleanVar(master=self, value=False)
@@ -101,6 +121,15 @@ class PromptGeneratorApp(
         self.tooltips.append(tooltip)
         return tooltip
 
+    def _apply_window_icon(self):
+        if not APP_ICON_PATH.is_file():
+            return
+        try:
+            self.iconbitmap(str(APP_ICON_PATH))
+            self.iconbitmap(default=str(APP_ICON_PATH))
+        except tkinter.TclError:
+            pass
+
     def _build_layout(self):
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(0, weight=1)
@@ -112,11 +141,13 @@ class PromptGeneratorApp(
         self.image_prompt_tab = self.tabs.add("Image to Prompt")
         self.settings_tab = self.tabs.add("Settings")
         self.history_tab = self.tabs.add("History")
+        self.help_tab = self.tabs.add("Help")
 
         self._build_generator_tab()
         self._build_image_prompt_tab()
         self._build_settings_tab()
         self._build_history_tab()
+        self._build_help_tab()
 
     def _get_model_names(self, directory=SYSTEM_PROMPTS_DIR):
         return sorted(path.stem for path in directory.glob("*.txt"))
@@ -190,9 +221,12 @@ class PromptGeneratorApp(
             )
             if selected_profile in lora_values[1:]:
                 self.lora_name_menu.set(selected_profile)
+            else:
+                self.lora_name_menu.set("")
 
     def _collect_ui_state(self):
         return {
+            "force_single_line": bool(self.force_single_line_var.get()),
             "generator": {
                 "engine": self.engine_menu.get(),
                 "api_model": self.api_model_menu.get(),
@@ -236,6 +270,9 @@ class PromptGeneratorApp(
         if not isinstance(image_state, dict):
             image_state = {}
 
+        if isinstance(ui_state.get("force_single_line"), bool):
+            self.force_single_line_var.set(ui_state["force_single_line"])
+
         for key, menu in (
             ("engine", self.engine_menu),
             ("target_model", self.model_menu),
@@ -272,7 +309,7 @@ class PromptGeneratorApp(
                 generator_state,
                 self.generator_temp_var,
                 self._update_generator_temp_label,
-                1.5,
+                TEMPERATURE_MAX,
             ),
             (
                 image_state,
@@ -282,12 +319,10 @@ class PromptGeneratorApp(
             ),
         ):
             temperature = state.get("temperature")
-            if (
-                isinstance(temperature, (int, float))
-                and not isinstance(temperature, bool)
-                and 0.0 <= temperature <= max_temperature
+            if isinstance(temperature, (int, float)) and not isinstance(
+                temperature, bool
             ):
-                variable.set(temperature)
+                variable.set(min(max(float(temperature), 0.0), max_temperature))
                 update_label()
 
         generator_engine = self.engine_menu.get()

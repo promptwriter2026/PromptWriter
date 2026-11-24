@@ -12,6 +12,10 @@ ENV/
 # Archives / backups
 *.zip
 
+# PyInstaller build artifacts
+build/
+dist/
+
 # Local SQLite databases (personal history)
 *.db
 *.sqlite

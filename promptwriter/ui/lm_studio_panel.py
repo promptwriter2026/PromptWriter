@@ -61,8 +61,8 @@ class LMStudioMixin:
             auto_unload_checkbox.grid_remove()
             clear_vram_button.grid_remove()
             status_label.grid_remove()
-        if hasattr(self, "_sync_generator_controls_height"):
-            self.after_idle(self._sync_generator_controls_height)
+        if hasattr(self, "_schedule_generator_controls_sync"):
+            self._schedule_generator_controls_sync()
 
     def _schedule_ui(self, delay, callback, *args):
         if getattr(self, "_closing", False):
@@ -115,7 +115,7 @@ class LMStudioMixin:
         self.image_lm_studio_status_label.configure(
             text=status_text, text_color=color
         )
-        self.after_idle(self._sync_generator_controls_height)
+        self._schedule_generator_controls_sync()
         self._lm_studio_status_check_in_progress = False
         if self._has_local_engine_selected() and not getattr(
             self, "_closing", False
@@ -167,7 +167,7 @@ class LMStudioMixin:
         self.image_lm_studio_status_label.configure(
             text=status_text, text_color=color
         )
-        self.after_idle(self._sync_generator_controls_height)
+        self._schedule_generator_controls_sync()
 
     def _auto_unload_lm_studio_model(self):
         try:

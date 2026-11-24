@@ -11,17 +11,20 @@ CAMERAS_PATH = DATA_DIR / "cameras.json"
 LORA_PROFILES_PATH = DATA_DIR / "lora_profiles.json"
 MODEL_PROFILES_PATH = DATA_DIR / "model_profiles.json"
 HISTORY_DB_PATH = DATA_DIR / "history.db"
-BOOTSTRAP_PROMPT_PATH = APP_DIR / "defaults" / "Flux-2-Klein.txt"
-VISION_BOOTSTRAP_PROMPT_PATH = APP_DIR / "defaults" / "Vision-Default.txt"
+BASELINE_PROMPTS_DIR = APP_DIR / "defaults"
+BASELINE_PROMPTS = {
+    SYSTEM_PROMPTS_DIR: ("single_prompt.txt", "multi_prompt.txt"),
+    VISION_SYSTEM_PROMPTS_DIR: ("image_to_prompt.txt",),
+}
+APP_ICON_PATH = APP_DIR / "promptwriter" / "assets" / "promptwriter.ico"
 
 
-DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
+MODEL_PLACEHOLDER = "Fetch models first"
 LOCAL_ENGINE = "Local (LM Studio)"
 LLM_ENGINES = ("Gemini", "Groq", LOCAL_ENGINE)
 DEFAULT_LM_STUDIO_BASE_URL = "http://127.0.0.1:1234"
 DEFAULT_COMFYUI_BASE_URL = "http://127.0.0.1:8188"
 DEFAULT_FORGE_BASE_URL = "http://127.0.0.1:7860"
-GEMINI_FALLBACK_MODELS = ["gemini-3.8-flash", "gemini-2.5-flash"]
 GEMINI_EXCLUDED_MODEL_TERMS = (
     "preview",
     "-tts",
@@ -48,22 +51,22 @@ DEFAULT_CONFIG = {
     "lm_studio_base_url": DEFAULT_LM_STUDIO_BASE_URL,
     "comfyui_base_url": DEFAULT_COMFYUI_BASE_URL,
     "forge_base_url": DEFAULT_FORGE_BASE_URL,
-    "selected_api_model": DEFAULT_GEMINI_MODEL,
+    "selected_api_model": "",
     "selected_api_models": {
-        "Gemini": DEFAULT_GEMINI_MODEL,
+        "Gemini": "",
         "Groq": "",
         LOCAL_ENGINE: "",
     },
     "generator_engine": "Gemini",
-    "generator_model": DEFAULT_GEMINI_MODEL,
+    "generator_model": "",
     "vision_engine": "Gemini",
-    "vision_model": DEFAULT_GEMINI_MODEL,
+    "vision_model": "",
     "available_models": {
-        "Gemini": [DEFAULT_GEMINI_MODEL],
+        "Gemini": [],
         "Groq": [],
         LOCAL_ENGINE: [],
     },
-    "cached_models_gemini": [DEFAULT_GEMINI_MODEL],
+    "cached_models_gemini": [],
     "cached_models_groq": [],
     "cached_models_local_lm_studio": [],
 }

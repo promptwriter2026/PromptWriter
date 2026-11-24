@@ -17,9 +17,9 @@ from promptwriter.services.vram_cleanup_api import (
 from promptwriter.services.vram_monitor import (
     VRAM_COLOR_NEUTRAL,
     VRAM_ERROR_LABEL,
-    format_vram_usage,
     get_gpu_memory_usage,
     shutdown_nvml,
+    vram_label_text,
     vram_usage_color,
 )
 
@@ -32,6 +32,7 @@ VRAM_RELEASE_WAIT_SECONDS = 1.0
 class VRAMMixin:
     def _build_vram_indicator(self):
         self._vram_after_id = None
+        self._vram_label_y = None
         self.vram_label = ctk.CTkLabel(
             self,
             text=VRAM_ERROR_LABEL,
@@ -43,25 +44,33 @@ class VRAMMixin:
         self.after_idle(self._position_vram_label)
         self._add_tooltip(
             self.vram_label,
-            "Live GPU 0 VRAM usage, refreshed every 2 seconds.",
+            "Live NVIDIA GPU 0 VRAM usage, refreshed every 2 seconds. "
+            "Not available on non-NVIDIA GPUs.",
         )
 
     def _position_vram_label(self, event=None):
         if not hasattr(self, "vram_label"):
             return
+        if event is not None and event.widget is not self:
+            return
         try:
             segmented_button = self.tabs._segmented_button
-            segmented_button.update_idletasks()
             center_y = (
                 self.tabs.winfo_y()
                 + segmented_button.winfo_y()
                 + segmented_button.winfo_height() / 2
             )
+        except (AttributeError, tkinter.TclError):
+            return
+        if center_y == self._vram_label_y:
+            return
+        try:
             self.vram_label.place_configure(
                 relx=1.0, x=-22, y=center_y, anchor="e"
             )
-        except (AttributeError, tkinter.TclError):
-            pass
+        except tkinter.TclError:
+            return
+        self._vram_label_y = center_y
 
     def _start_vram_polling(self):
         self._poll_vram_usage()
@@ -89,7 +98,7 @@ class VRAMMixin:
         )
         try:
             self.vram_label.configure(
-                text=format_vram_usage(memory), text_color=color
+                text=vram_label_text(memory), text_color=color
             )
         except (KeyError, TypeError, ValueError, tkinter.TclError):
             pass

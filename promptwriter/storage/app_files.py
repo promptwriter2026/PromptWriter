@@ -3,16 +3,39 @@ import shutil
 
 from promptwriter.config import (
     APP_DIR,
-    BOOTSTRAP_PROMPT_PATH,
+    BASELINE_PROMPTS,
+    BASELINE_PROMPTS_DIR,
     CONFIG_PATH,
     DATA_DIR,
     DEFAULT_CONFIG,
     DEFAULT_JSON_FILES,
     SYSTEM_PROMPTS_DIR,
-    VISION_BOOTSTRAP_PROMPT_PATH,
     VISION_SYSTEM_PROMPTS_DIR,
 )
 from promptwriter.storage.history_db import initialize_history_database
+
+
+LEGACY_BOOTSTRAP_PROMPTS = {
+    SYSTEM_PROMPTS_DIR: ("Flux-2-Klein.txt",),
+    VISION_SYSTEM_PROMPTS_DIR: ("Vision-Default.txt",),
+}
+
+
+def _ensure_baseline_prompts():
+    for directory, names in BASELINE_PROMPTS.items():
+        legacy_names = LEGACY_BOOTSTRAP_PROMPTS.get(directory, ())
+        existing = list(directory.glob("*.txt"))
+        if any(path.name not in legacy_names for path in existing):
+            continue
+        for path in existing:
+            path.unlink(missing_ok=True)
+        for name in names:
+            source = BASELINE_PROMPTS_DIR / name
+            if not source.is_file():
+                raise FileNotFoundError(
+                    f"Default system prompt is missing: {source}"
+                )
+            shutil.copyfile(source, directory / name)
 
 
 def ensure_app_files():
@@ -29,26 +52,7 @@ def ensure_app_files():
         CONFIG_PATH.write_text(json.dumps(DEFAULT_CONFIG, indent=2), encoding="utf-8")
     initialize_history_database()
 
-    if not any(SYSTEM_PROMPTS_DIR.glob("*.txt")):
-        if BOOTSTRAP_PROMPT_PATH.exists():
-            shutil.copyfile(
-                BOOTSTRAP_PROMPT_PATH,
-                SYSTEM_PROMPTS_DIR / BOOTSTRAP_PROMPT_PATH.name,
-            )
-        else:
-            raise FileNotFoundError(
-                f"Default system prompt is missing: {BOOTSTRAP_PROMPT_PATH}"
-            )
-
-    vision_default_path = VISION_SYSTEM_PROMPTS_DIR / "Vision-Default.txt"
-    if not vision_default_path.exists():
-        if VISION_BOOTSTRAP_PROMPT_PATH.exists():
-            shutil.copyfile(VISION_BOOTSTRAP_PROMPT_PATH, vision_default_path)
-        else:
-            raise FileNotFoundError(
-                f"Default vision system prompt is missing: "
-                f"{VISION_BOOTSTRAP_PROMPT_PATH}"
-            )
+    _ensure_baseline_prompts()
 
 
 def read_json(path, default_value):

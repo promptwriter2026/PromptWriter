@@ -3,7 +3,10 @@ from promptwriter.services.lora import (
     build_lora_instructions,
 )
 
-VISION_DEFAULT_USER_PROMPT = "Generate the prompt for the provided image."
+VISION_DEFAULT_USER_PROMPT = (
+    "Generate the prompt for the provided image, "
+    "following the system instructions."
+)
 
 
 def assemble_text_request(prompt_path, lora_profile_name, lora_profiles, camera, user_idea):
@@ -38,11 +41,13 @@ def assemble_image_request(
     )
     if lora_instructions:
         system_parts.append(lora_instructions)
-    user_text = (
-        f"Additional context and instructions:\n{additional_context}"
-        if additional_context
-        else VISION_DEFAULT_USER_PROMPT
-    )
+    context = (additional_context or "").strip()
+    user_text = VISION_DEFAULT_USER_PROMPT
+    if context:
+        user_text = (
+            f"{VISION_DEFAULT_USER_PROMPT}\n\n"
+            f"Additional context and instructions:\n{context}"
+        )
     return {
         "system": "\n\n".join(part for part in system_parts if part),
         "user": user_text,

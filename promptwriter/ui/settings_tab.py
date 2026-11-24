@@ -1,5 +1,6 @@
 import json
 import re
+import tkinter
 from tkinter import messagebox
 
 import customtkinter as ctk
@@ -8,16 +9,18 @@ from promptwriter.config import (
     CAMERAS_PATH,
     DEFAULT_COMFYUI_BASE_URL,
     DEFAULT_FORGE_BASE_URL,
-    DEFAULT_GEMINI_MODEL,
     DEFAULT_LM_STUDIO_BASE_URL,
     LLM_ENGINES,
     LORA_PROFILES_PATH,
+    MODEL_PLACEHOLDER,
     SYSTEM_PROMPTS_DIR,
     VISION_SYSTEM_PROMPTS_DIR,
     model_cache_key,
 )
 from promptwriter.services.lora import lora_profile_value
-from promptwriter.storage.config_store import save_config
+from promptwriter.storage.app_files import read_json
+from promptwriter.storage.config_store import load_config, save_config
+from promptwriter.storage.personal_data_reset import reset_personal_data
 from promptwriter.storage.profile_store import delete_profile, list_profiles
 
 
@@ -296,6 +299,7 @@ class SettingsTabMixin:
             ],
             command=self._load_lora_profile,
         )
+        self.lora_name_menu.set("")
         self.lora_name_menu.grid(
             row=22, column=0, columnspan=2, padx=12, pady=(0, 8), sticky="ew"
         )
@@ -361,6 +365,38 @@ class SettingsTabMixin:
         self.lora_status = ctk.CTkLabel(tab, text="")
         self.lora_status.grid(
             row=26, column=0, columnspan=2, padx=12, pady=(0, 12), sticky="e"
+        )
+
+        ctk.CTkLabel(tab, text="Reset / Delete All Personal Data").grid(
+            row=27, column=0, columnspan=2, padx=12, pady=(16, 4), sticky="w"
+        )
+        self.reset_delete_keys_var = tkinter.BooleanVar(master=self, value=False)
+        self.reset_delete_keys_checkbox = ctk.CTkCheckBox(
+            tab,
+            text="Also delete saved API keys",
+            variable=self.reset_delete_keys_var,
+        )
+        self.reset_delete_keys_checkbox.grid(
+            row=28, column=0, columnspan=2, padx=12, pady=(0, 8), sticky="w"
+        )
+        self._add_tooltip(
+            self.reset_delete_keys_checkbox,
+            "When checked, the reset also removes the saved Gemini and Groq API keys.",
+        )
+        self.reset_personal_data_button = ctk.CTkButton(
+            tab,
+            text="Reset / Delete All Personal Data",
+            fg_color="#7a2d2d",
+            hover_color="#5e2222",
+            command=self._confirm_reset_personal_data,
+        )
+        self.reset_personal_data_button.grid(
+            row=29, column=0, columnspan=2, padx=12, pady=(0, 12), sticky="ew"
+        )
+        self._add_tooltip(
+            self.reset_personal_data_button,
+            "Delete local settings, profiles, custom prompts, history, and caches. "
+            "The 3 baseline system prompts are kept.",
         )
 
     def _load_lora_profile(self, profile_name):
@@ -511,8 +547,6 @@ class SettingsTabMixin:
                 if isinstance(models, list)
                 else []
             )
-        if not self.available_models["Gemini"]:
-            self.available_models["Gemini"] = [DEFAULT_GEMINI_MODEL]
         selected_models = self.config_data.get("selected_api_models", {})
         if not isinstance(selected_models, dict):
             selected_models = {}
@@ -559,11 +593,11 @@ class SettingsTabMixin:
     def _save_settings(self):
         generator_engine = self.engine_menu.get()
         generator_model = self.api_model_menu.get()
-        if generator_model == "Fetch models first":
+        if generator_model == MODEL_PLACEHOLDER:
             generator_model = ""
         vision_engine = self.image_engine_menu.get()
         vision_model = self.image_api_model_menu.get()
-        if vision_model == "Fetch models first":
+        if vision_model == MODEL_PLACEHOLDER:
             vision_model = ""
         self.generator_selected_models[generator_engine] = generator_model
         self.vision_selected_models[vision_engine] = vision_model
@@ -663,6 +697,91 @@ class SettingsTabMixin:
         self.saved_profiles_status.configure(
             text="Profile deleted.", text_color="green"
         )
+
+    def _confirm_reset_personal_data(self):
+        delete_keys = bool(self.reset_delete_keys_var.get())
+        lines = [
+            "This permanently deletes:",
+            "- Saved settings, model profiles, and last-used model selections",
+            "- LoRA profiles and camera / lens entries",
+            "- Custom system prompt .txt files (the 3 baseline prompts are kept)",
+            "- All history entries",
+            "- The saved rough idea and other session state",
+            "- Cached / fetched model lists",
+            (
+                "- Saved Gemini and Groq API keys"
+                if delete_keys
+                else "- Saved API keys will be KEPT because the checkbox is off"
+            ),
+            "",
+            "This cannot be undone. Continue?",
+        ]
+        if not messagebox.askyesno(
+            "Delete All Personal Data",
+            "\n".join(lines),
+            icon="warning",
+            parent=self,
+        ):
+            return
+        try:
+            summary = reset_personal_data(delete_api_keys=delete_keys)
+        except OSError as error:
+            self.settings_status.configure(
+                text=f"Could not reset personal data: {error}", text_color="red"
+            )
+            return
+        self._apply_personal_data_reset()
+        if summary["errors"]:
+            self.settings_status.configure(
+                text=f"Reset finished with errors: {summary['errors'][0]}",
+                text_color="red",
+            )
+            return
+        self.settings_status.configure(
+            text="All personal data deleted.", text_color="green"
+        )
+
+    def _apply_personal_data_reset(self):
+        self.config_data = load_config()
+        self.cameras = read_json(CAMERAS_PATH, [])
+        self.lora_profiles = read_json(LORA_PROFILES_PATH, [])
+        for entry in (
+            self.gemini_key_entry,
+            self.groq_key_entry,
+            self.lm_studio_url_entry,
+            self.comfyui_url_entry,
+            self.forge_url_entry,
+        ):
+            entry.delete(0, "end")
+        self._load_settings()
+
+        self.prompt_name_menu.set("")
+        self.vision_prompt_name_menu.set("")
+        self.prompt_editor.delete("1.0", "end")
+        self.vision_prompt_editor.delete("1.0", "end")
+        self.lora_name_menu.set("")
+        self.lora_trigger_entry.delete(0, "end")
+        self.lora_description_text.delete("1.0", "end")
+        self.lora_status.configure(text="")
+        self.saved_profiles_status.configure(text="")
+        self.rough_idea_text.delete("1.0", "end")
+        self.auto_unload_var.set(False)
+        self.force_single_line_var.set(True)
+
+        self._refresh_prompt_name_options()
+        self._refresh_generator_options()
+        self._on_engine_changed(self.engine_menu.get(), sync_profile=True)
+        self._on_image_engine_changed(
+            self.image_engine_menu.get(), sync_profile=True
+        )
+
+        self.history_search_entry.delete(0, "end")
+        self.favorites_only_switch.deselect()
+        self._refresh_history()
+        self._clear_history_selection()
+        self.history_status_label.configure(text="")
+
+        self.reset_delete_keys_var.set(False)
 
     def _add_camera(self):
         camera = self.camera_entry.get().strip()

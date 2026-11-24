@@ -1,13 +1,18 @@
 import inspect
 import json
 import re
+import sqlite3
 import tempfile
+import time
+import tkinter
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import requests
+import customtkinter as ctk
 
 from promptwriter.config import LOCAL_ENGINE
 from promptwriter.services import (
@@ -17,12 +22,23 @@ from promptwriter.services import (
     vram_cleanup_api,
     vram_monitor,
 )
-from promptwriter.storage import profile_store
+from promptwriter.storage import app_files, history_db, personal_data_reset, profile_store
 from promptwriter.services.prompt_builder import (
     VISION_DEFAULT_USER_PROMPT,
     assemble_image_request,
     assemble_text_request,
 )
+from promptwriter.ui import generator_tab, help_tab
+from promptwriter.ui.generator_tab import GeneratorTabMixin
+from promptwriter.ui.help_tab import (
+    HELP_GUIDE_TAB,
+    HELP_LICENSE_TAB,
+    HELP_LINKS,
+    KOFI_URL,
+    LICENSE_ENTRIES,
+    HelpTabMixin,
+)
+from promptwriter.ui.tooltip import ToolTip, clamp_tooltip_position
 from promptwriter.utils.text import strip_think_tags
 
 
@@ -70,11 +86,31 @@ class PromptAssemblyTests(unittest.TestCase):
         parts = assemble_image_request(self.prompt_path, "None", [], "make it cinematic")
         self.assertEqual(parts["system"], "SYSTEM RULES")
         self.assertEqual(
-            parts["user"], "Additional context and instructions:\nmake it cinematic"
+            parts["user"],
+            f"{VISION_DEFAULT_USER_PROMPT}\n\n"
+            "Additional context and instructions:\nmake it cinematic",
+        )
+
+    def test_vision_assembly_trims_context_before_appending(self):
+        parts = assemble_image_request(
+            self.prompt_path, "None", [], "  make it cinematic \n"
+        )
+        self.assertEqual(
+            parts["user"],
+            f"{VISION_DEFAULT_USER_PROMPT}\n\n"
+            "Additional context and instructions:\nmake it cinematic",
         )
 
     def test_vision_assembly_defaults_user_prompt_when_context_empty(self):
         parts = assemble_image_request(self.prompt_path, "None", [], "")
+        self.assertEqual(parts["user"], VISION_DEFAULT_USER_PROMPT)
+
+    def test_vision_assembly_treats_whitespace_context_as_empty(self):
+        parts = assemble_image_request(self.prompt_path, "None", [], "  \n\t ")
+        self.assertEqual(parts["user"], VISION_DEFAULT_USER_PROMPT)
+
+    def test_vision_assembly_treats_none_context_as_empty(self):
+        parts = assemble_image_request(self.prompt_path, "None", [], None)
         self.assertEqual(parts["user"], VISION_DEFAULT_USER_PROMPT)
 
 
@@ -153,6 +189,49 @@ class PayloadTests(unittest.TestCase):
         self.assertEqual(payload["messages"][1]["content"], "USER")
         self.assertEqual(payload["max_tokens"], 6500)
         self.assertEqual(payload["top_p"], 0.95)
+
+    def test_presence_penalty_is_sent_to_groq_and_local(self):
+        for engine in ("Groq", LOCAL_ENGINE):
+            with self.subTest(engine=engine):
+                _, post = self._capture(
+                    engine,
+                    chat_response("a prompt"),
+                    request_text={"system": "SYS", "user": "USER"},
+                    presence_penalty=1.25,
+                    base_url="http://127.0.0.1:1234",
+                )
+                self.assertEqual(
+                    post.call_args.kwargs["json"]["presence_penalty"], 1.25
+                )
+
+    def test_presence_penalty_is_omitted_when_inactive_or_out_of_range(self):
+        for engine in ("Groq", LOCAL_ENGINE):
+            for value in (0.0, -0.5, 2.5):
+                with self.subTest(engine=engine, value=value):
+                    _, post = self._capture(
+                        engine,
+                        chat_response("a prompt"),
+                        request_text={"system": "SYS", "user": "USER"},
+                        presence_penalty=value,
+                        base_url="http://127.0.0.1:1234",
+                    )
+                    self.assertNotIn(
+                        "presence_penalty", post.call_args.kwargs["json"]
+                    )
+
+    def test_gemini_never_receives_presence_penalty(self):
+        response = FakeResponse(
+            {"candidates": [{"content": {"parts": [{"text": "a prompt"}]}}]}
+        )
+        _, post = self._capture(
+            "Gemini",
+            response,
+            request_text={"system": "SYS", "user": "USER"},
+            presence_penalty=1.25,
+        )
+        payload = post.call_args.kwargs["json"]
+        self.assertNotIn("presence_penalty", payload)
+        self.assertNotIn("presencePenalty", payload["generationConfig"])
 
     def test_local_only_fields_are_included_when_explicitly_provided(self):
         _, post = self._capture(
@@ -578,10 +657,12 @@ class ProfileStoreTests(unittest.TestCase):
         gemini_text = profile_store.default_profile("Gemini", "text")
         self.assertEqual(gemini_text["temperature"], 0.7)
         self.assertEqual(gemini_text["top_p"], 0.95)
+        self.assertEqual(gemini_text["presence_penalty"], 0.0)
         self.assertIsNone(gemini_text["max_tokens"])
         vision_local = profile_store.default_profile(LOCAL_ENGINE, "vision")
         self.assertEqual(vision_local["temperature"], 0.1)
         self.assertEqual(vision_local["top_p"], 0.2)
+        self.assertEqual(vision_local["presence_penalty"], 0.0)
         self.assertEqual(vision_local["max_tokens"], 2048)
         self.assertEqual(
             profile_store.default_profile("Groq", "text")["max_tokens"], 6500
@@ -633,12 +714,56 @@ class ProfileStoreTests(unittest.TestCase):
 
     def test_partial_profile_falls_back_to_defaults(self):
         profile_store.save_profile(
-            "Groq", "qwen-test", "text", {"temperature": 1.1}
+            "Groq", "qwen-test", "text", {"temperature": 0.6}
         )
         profile = profile_store.get_profile("Groq", "qwen-test", "text")
-        self.assertEqual(profile["temperature"], 1.1)
+        self.assertEqual(profile["temperature"], 0.6)
         self.assertEqual(profile["top_p"], 0.95)
         self.assertEqual(profile["max_tokens"], 6500)
+
+    def test_profile_temperature_above_one_is_capped(self):
+        for temperature in (1.1, 1.5, 2.0):
+            with self.subTest(temperature=temperature):
+                saved = profile_store.save_profile(
+                    "Gemini", "gemini-test", "text", {"temperature": temperature}
+                )
+                self.assertEqual(saved["temperature"], 1.0)
+                self.assertEqual(
+                    profile_store.get_profile(
+                        "Gemini", "gemini-test", "text"
+                    )["temperature"],
+                    1.0,
+                )
+        entries = profile_store.list_profiles()
+        self.assertTrue(all(entry["profile"]["temperature"] <= 1.0 for entry in entries))
+
+    def test_presence_penalty_defaults_and_validation(self):
+        self.path.write_text(
+            json.dumps(
+                {"Groq": {"legacy": {"text": {"temperature": 0.4}}}}
+            ),
+            encoding="utf-8",
+        )
+        legacy = profile_store.get_profile("Groq", "legacy", "text")
+        self.assertEqual(legacy["presence_penalty"], 0.0)
+
+        saved = profile_store.save_profile(
+            "Groq", "pp-test", "text", {"presence_penalty": 1.25}
+        )
+        self.assertEqual(saved["presence_penalty"], 1.25)
+        self.assertEqual(
+            profile_store.get_profile("Groq", "pp-test", "text")[
+                "presence_penalty"
+            ],
+            1.25,
+        )
+
+        for value in (2.5, -0.1):
+            with self.subTest(value=value):
+                saved = profile_store.save_profile(
+                    "Groq", "pp-test", "text", {"presence_penalty": value}
+                )
+                self.assertEqual(saved["presence_penalty"], 0.0)
 
     def test_delete_profile_and_list(self):
         profile_store.save_profile(
@@ -673,17 +798,37 @@ class ProfileStoreTests(unittest.TestCase):
         summary = profile_store.format_profile_summary(
             LOCAL_ENGINE, saved, True, temperature=0.55
         )
-        self.assertIn("Temp: 0.55", summary)
-        self.assertIn("Ctx: 8192", summary)
-        self.assertIn("Max: 2048", summary)
-        self.assertIn("Top-P: 0.95", summary)
-        self.assertIn("Min-P: 0.05", summary)
-        self.assertTrue(summary.endswith("Think: On"))
+        self.assertIn("Temp:\u00A00.55", summary)
+        self.assertIn("Ctx:\u00A08192", summary)
+        self.assertIn("Max:\u00A02048", summary)
+        self.assertIn("Top-P:\u00A00.95", summary)
+        self.assertIn("Min-P:\u00A00.05", summary)
+        self.assertTrue(summary.endswith("Think:\u00A0On"))
+        first_row, second_row = summary.splitlines()
+        self.assertIn("Min-P:", first_row)
+        self.assertIn("Ctx:", second_row)
         saved["disable_thinking"] = True
         summary = profile_store.format_profile_summary(
             LOCAL_ENGINE, saved, True, temperature=0.55
         )
-        self.assertTrue(summary.endswith("Think: Off"))
+        self.assertTrue(summary.endswith("Think:\u00A0Off"))
+
+    def test_presence_penalty_summary_only_when_active_and_supported(self):
+        def summary(engine, value):
+            profile = profile_store.default_profile(engine, "text")
+            profile["presence_penalty"] = value
+            return profile_store.format_profile_summary(engine, profile, True)
+
+        groq_row_one, groq_row_two = summary("Groq", 1.25).splitlines()
+        self.assertIn("Pres:\u00A01.25", groq_row_two)
+        self.assertNotIn("Pres:", groq_row_one)
+
+        local_row_one, local_row_two = summary(LOCAL_ENGINE, 1.25).splitlines()
+        self.assertIn("Pres:\u00A01.25", local_row_one)
+        self.assertIn("Think:\u00A0On", local_row_two)
+
+        self.assertNotIn("Pres:", summary("Groq", 0.0))
+        self.assertNotIn("Pres:", summary("Gemini", 1.25))
 
 
 class ProfileInjectionTests(unittest.TestCase):
@@ -702,12 +847,14 @@ class ProfileInjectionTests(unittest.TestCase):
             "text",
             temperature=0.8,
             top_p=0.5,
+            presence_penalty=1.25,
             min_p=0.05,
             repeat_penalty=1.1,
             max_tokens=1024,
             disable_thinking=True,
         )
         kwargs = profile_store.profile_request_kwargs(LOCAL_ENGINE, profile)
+        self.assertEqual(kwargs["presence_penalty"], 1.25)
         with patch.object(
             llm_client.requests, "post", return_value=chat_response("a prompt")
         ) as post:
@@ -722,6 +869,7 @@ class ProfileInjectionTests(unittest.TestCase):
         payload = post.call_args.kwargs["json"]
         self.assertEqual(payload["temperature"], 0.8)
         self.assertEqual(payload["top_p"], 0.5)
+        self.assertEqual(payload["presence_penalty"], 1.25)
         self.assertEqual(payload["min_p"], 0.05)
         self.assertEqual(payload["repeat_penalty"], 1.1)
         self.assertEqual(payload["max_tokens"], 1024)
@@ -754,8 +902,34 @@ class ProfileInjectionTests(unittest.TestCase):
         self.assertEqual(payload["max_tokens"], 700)
         self.assertNotIn("min_p", payload)
         self.assertNotIn("repeat_penalty", payload)
+        self.assertNotIn("presence_penalty", payload)
         self.assertNotIn("cache_prompt", payload)
         self.assertEqual(payload["messages"][-1]["content"], "USER")
+
+    def test_presence_penalty_kwargs_follow_engine_support(self):
+        for engine in ("Groq", LOCAL_ENGINE):
+            with self.subTest(engine=engine):
+                active = self._profile(
+                    engine, "text", presence_penalty=1.25
+                )
+                self.assertEqual(
+                    profile_store.profile_request_kwargs(engine, active)[
+                        "presence_penalty"
+                    ],
+                    1.25,
+                )
+                inactive = self._profile(
+                    engine, "text", presence_penalty=0.0
+                )
+                self.assertNotIn(
+                    "presence_penalty",
+                    profile_store.profile_request_kwargs(engine, inactive),
+                )
+        gemini = self._profile("Gemini", "text", presence_penalty=1.25)
+        self.assertNotIn(
+            "presence_penalty",
+            profile_store.profile_request_kwargs("Gemini", gemini),
+        )
 
     def test_profile_context_length_is_local_only(self):
         local = self._profile(LOCAL_ENGINE, "text", context_length=4096)
@@ -770,9 +944,15 @@ class ProfileInjectionTests(unittest.TestCase):
 
     def test_gemini_profile_maps_top_p_and_max_tokens(self):
         profile = self._profile(
-            "Gemini", "text", temperature=0.4, top_p=0.8, max_tokens=1024
+            "Gemini",
+            "text",
+            temperature=0.4,
+            top_p=0.8,
+            presence_penalty=1.25,
+            max_tokens=1024,
         )
         kwargs = profile_store.profile_request_kwargs("Gemini", profile)
+        self.assertNotIn("presence_penalty", kwargs)
         response = FakeResponse(
             {
                 "candidates": [
@@ -786,10 +966,13 @@ class ProfileInjectionTests(unittest.TestCase):
             llm_client.request_generated_prompt(
                 "Gemini", "key", "gemini-model", "USER", **kwargs
             )
-        generation_config = post.call_args.kwargs["json"]["generationConfig"]
+        payload = post.call_args.kwargs["json"]
+        generation_config = payload["generationConfig"]
         self.assertEqual(generation_config["temperature"], 0.4)
         self.assertEqual(generation_config["topP"], 0.8)
         self.assertEqual(generation_config["maxOutputTokens"], 1024)
+        self.assertNotIn("presence_penalty", payload)
+        self.assertNotIn("presencePenalty", generation_config)
 
 
 class EnsureModelLoadedTests(unittest.TestCase):
@@ -1053,6 +1236,73 @@ class VRAMMonitorTests(unittest.TestCase):
         with patch.object(vram_monitor, "pynvml", fake_pynvml):
             self.assertIsNone(vram_monitor.get_gpu_memory_usage())
 
+    def test_non_nvidia_device_failure_is_cached(self):
+        fake_pynvml = Mock()
+        fake_pynvml.nvmlDeviceGetHandleByIndex.side_effect = RuntimeError(
+            "not an NVIDIA GPU"
+        )
+        with patch.object(vram_monitor, "pynvml", fake_pynvml):
+            self.assertIsNone(vram_monitor.get_gpu_memory_usage())
+            self.assertFalse(vram_monitor.is_vram_supported())
+            self.assertIsNone(vram_monitor.get_gpu_memory_usage())
+            self.assertIsNone(vram_monitor.get_gpu_memory_usage())
+        fake_pynvml.nvmlDeviceGetHandleByIndex.assert_called_once_with(0)
+
+    def test_unsupported_label_for_non_nvidia_device(self):
+        fake_pynvml = Mock()
+        fake_pynvml.nvmlDeviceGetHandleByIndex.side_effect = RuntimeError(
+            "not an NVIDIA GPU"
+        )
+        with patch.object(vram_monitor, "pynvml", fake_pynvml):
+            memory = vram_monitor.get_gpu_memory_usage()
+            self.assertEqual(
+                vram_monitor.vram_label_text(memory), "VRAM: Not supported"
+            )
+
+    def test_unsupported_label_when_nvml_module_is_missing(self):
+        with patch.object(vram_monitor, "pynvml", None):
+            self.assertIsNone(vram_monitor.get_gpu_memory_usage())
+            self.assertFalse(vram_monitor.is_vram_supported())
+            self.assertEqual(
+                vram_monitor.vram_label_text(None), "VRAM: Not supported"
+            )
+
+    def test_na_label_for_unreadable_memory_on_supported_device(self):
+        fake_pynvml = Mock()
+        fake_pynvml.nvmlDeviceGetMemoryInfo.return_value = SimpleNamespace(
+            total=0, used=0
+        )
+        with patch.object(vram_monitor, "pynvml", fake_pynvml):
+            memory = vram_monitor.get_gpu_memory_usage()
+            self.assertIsNone(memory)
+            self.assertTrue(vram_monitor.is_vram_supported())
+            self.assertEqual(vram_monitor.vram_label_text(memory), "VRAM: N/A")
+
+    def test_supported_label_for_live_memory(self):
+        memory = {"used_gb": 8.04, "total_gb": 16.0, "percent": 50.2}
+        self.assertEqual(
+            vram_monitor.vram_label_text(memory), "VRAM: 8.0 / 16.0 GB (50%)"
+        )
+
+    def test_shutdown_clears_cached_unsupported_state(self):
+        fake_pynvml = Mock()
+        fake_pynvml.nvmlDeviceGetHandleByIndex.side_effect = RuntimeError(
+            "not an NVIDIA GPU"
+        )
+        with patch.object(vram_monitor, "pynvml", fake_pynvml):
+            self.assertIsNone(vram_monitor.get_gpu_memory_usage())
+            self.assertFalse(vram_monitor.is_vram_supported())
+            vram_monitor.shutdown_nvml()
+            fake_pynvml.nvmlDeviceGetHandleByIndex.side_effect = None
+            fake_pynvml.nvmlDeviceGetMemoryInfo.return_value = SimpleNamespace(
+                total=100, used=10
+            )
+            self.assertTrue(vram_monitor.is_vram_supported())
+            self.assertIsNotNone(vram_monitor.get_gpu_memory_usage())
+        self.assertEqual(
+            fake_pynvml.nvmlDeviceGetHandleByIndex.call_count, 2
+        )
+
     def test_reads_device_zero_memory(self):
         total = 16 * vram_monitor.BYTES_PER_GB
         used = 8 * vram_monitor.BYTES_PER_GB
@@ -1260,6 +1510,852 @@ class VramPreflightConditionTests(unittest.TestCase):
         self.assertEqual(
             vram_cleanup_api.preflight_flags("unknown"), (False, False)
         )
+
+
+class HistoryStoreTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.path = Path(self.temp_dir.name) / "history.db"
+        self.path_patch = patch.object(history_db, "HISTORY_DB_PATH", self.path)
+        self.path_patch.start()
+        history_db.initialize_history_database()
+
+    def tearDown(self):
+        self.path_patch.stop()
+        self.temp_dir.cleanup()
+
+    def _insert(self, idea, prompt):
+        history_db.insert_generation(
+            idea,
+            prompt,
+            {"llm_engine": "Groq"},
+            source_tab="generator",
+            engine="Groq",
+            model="test-model",
+        )
+
+    def test_delete_generation_removes_entry(self):
+        self._insert("idea one", "prompt one")
+        entry_id = history_db.fetch_recent_generations()[0][0]
+
+        self.assertTrue(history_db.delete_generation(entry_id))
+        self.assertEqual(history_db.fetch_recent_generations(), [])
+        self.assertIsNone(history_db.fetch_generation(entry_id))
+        self.assertFalse(history_db.delete_generation(entry_id))
+
+    def test_delete_removes_favorite_prompt(self):
+        self._insert("favorite idea", "favorite prompt")
+        entry_id = history_db.fetch_recent_generations()[0][0]
+        history_db.toggle_favorite(entry_id)
+
+        history_db.delete_generation(entry_id)
+
+        self.assertEqual(history_db.fetch_favorite_prompts(), [])
+        self.assertEqual(
+            history_db.fetch_recent_generations("", favorites_only=True), []
+        )
+
+    def test_search_reaches_entries_beyond_previous_list_window(self):
+        self._insert("needle idea", "first prompt")
+        for index in range(60):
+            self._insert(f"filler idea {index}", f"filler prompt {index}")
+
+        rows = history_db.fetch_recent_generations("needle")
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][2], "needle idea")
+
+    def test_favorites_only_filter_keeps_favorite_entries(self):
+        self._insert("plain idea", "plain prompt")
+        self._insert("favorite idea", "favorite prompt")
+        favorite_id = history_db.fetch_recent_generations()[0][0]
+        history_db.toggle_favorite(favorite_id)
+
+        rows = history_db.fetch_recent_generations("", favorites_only=True)
+
+        self.assertEqual([row[0] for row in rows], [favorite_id])
+        self.assertEqual(history_db.fetch_favorite_prompts(), ["favorite prompt"])
+
+    def test_bulk_delete_keeps_favorites_by_default(self):
+        self._insert("idea one", "prompt one")
+        self._insert("idea two", "prompt two")
+        self._insert("favorite idea", "favorite prompt")
+        favorite_id = history_db.fetch_recent_generations()[0][0]
+        history_db.toggle_favorite(favorite_id)
+
+        self.assertEqual(history_db.count_generations_for_delete(), 2)
+        self.assertEqual(history_db.bulk_delete_generations(), 2)
+
+        remaining = history_db.fetch_recent_generations()
+        self.assertEqual([row[0] for row in remaining], [favorite_id])
+        self.assertEqual(history_db.fetch_favorite_prompts(), ["favorite prompt"])
+
+    def test_bulk_delete_includes_favorites_when_requested(self):
+        self._insert("idea one", "prompt one")
+        self._insert("favorite idea", "favorite prompt")
+        favorite_id = history_db.fetch_recent_generations()[0][0]
+        history_db.toggle_favorite(favorite_id)
+
+        self.assertEqual(
+            history_db.count_generations_for_delete(include_favorites=True), 2
+        )
+        self.assertEqual(history_db.bulk_delete_generations(include_favorites=True), 2)
+
+        self.assertEqual(history_db.fetch_recent_generations(), [])
+        self.assertEqual(history_db.fetch_favorite_prompts(), [])
+
+    def test_bulk_delete_cutoff_removes_only_older_entries(self):
+        self._insert("old idea", "old prompt")
+        old_id = history_db.fetch_recent_generations()[0][0]
+        self._insert("new idea", "new prompt")
+        connection = sqlite3.connect(self.path)
+        try:
+            connection.execute(
+                "UPDATE generations SET timestamp = ? WHERE id = ?",
+                ("2020-01-01T00:00:00+00:00", old_id),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        cutoff = datetime.now().astimezone() - timedelta(days=30)
+
+        self.assertEqual(
+            history_db.count_generations_for_delete(older_than=cutoff), 1
+        )
+        self.assertEqual(history_db.bulk_delete_generations(older_than=cutoff), 1)
+
+        remaining = history_db.fetch_recent_generations()
+        self.assertEqual([row[2] for row in remaining], ["new idea"])
+
+
+class PersonalDataResetTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        root = Path(self.temp_dir.name)
+        self.data_dir = root / "data"
+        self.data_dir.mkdir()
+        self.text_dir = root / "system_prompts"
+        self.vision_dir = root / "system_prompts_vision"
+        self.text_dir.mkdir()
+        self.vision_dir.mkdir()
+        self.config_path = root / "config.json"
+        self.rough_path = root / "rough_idea_cache.txt"
+        self.history_path = self.data_dir / "history.db"
+        self.cameras_path = self.data_dir / "cameras.json"
+        self.lora_path = self.data_dir / "lora_profiles.json"
+        self.profiles_path = self.data_dir / "model_profiles.json"
+        self.json_files = {
+            self.cameras_path: [],
+            self.lora_path: [],
+            self.profiles_path: {},
+        }
+
+        self.path_patch = patch.multiple(
+            personal_data_reset,
+            CONFIG_PATH=self.config_path,
+            ROUGH_IDEA_CACHE_PATH=self.rough_path,
+            BASELINE_PROMPTS={
+                self.text_dir: ("single_prompt.txt", "multi_prompt.txt"),
+                self.vision_dir: ("image_to_prompt.txt",),
+            },
+            DEFAULT_JSON_FILES=self.json_files,
+        )
+        self.path_patch.start()
+        self.history_patch = patch.multiple(
+            history_db,
+            HISTORY_DB_PATH=self.history_path,
+            DATA_DIR=self.data_dir,
+        )
+        self.history_patch.start()
+
+        self.config_path.write_text(
+            json.dumps(
+                {
+                    "gemini_api_key": "gemini-key",
+                    "groq_api_key": "groq-key",
+                    "engine": "Groq",
+                    "selected_api_model": "custom-model",
+                    "selected_api_models": {
+                        "Gemini": "custom-model",
+                        "Groq": "custom-model",
+                    },
+                    "available_models": {"Gemini": ["custom-model"]},
+                    "cached_models_gemini": ["custom-model"],
+                    "cached_models_groq": ["custom-model"],
+                    "ui_state": {"generator": {"engine": "Groq"}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.cameras_path.write_text(json.dumps(["Camera X"]), encoding="utf-8")
+        self.lora_path.write_text(
+            json.dumps([{"name": "Hero", "trigger_word": "hero"}]), encoding="utf-8"
+        )
+        self.profiles_path.write_text(
+            json.dumps({"Groq": {"custom-model": {"text": {"temperature": 0.9}}}}),
+            encoding="utf-8",
+        )
+        self.rough_path.write_text("old idea", encoding="utf-8")
+        history_db.initialize_history_database()
+        history_db.insert_generation("idea", "prompt", {"llm_engine": "Groq"})
+        history_db.insert_generation("idea 2", "prompt 2", {"llm_engine": "Groq"})
+        for directory, name, text in (
+            (self.text_dir, "single_prompt.txt", "old single\n"),
+            (self.text_dir, "multi_prompt.txt", "old multi\n"),
+            (self.vision_dir, "image_to_prompt.txt", "old image\n"),
+        ):
+            (directory / name).write_text(text, encoding="utf-8")
+        (self.text_dir / "CustomPrompt.txt").write_text("custom\n", encoding="utf-8")
+        (self.vision_dir / "CustomVision.txt").write_text(
+            "custom vision\n", encoding="utf-8"
+        )
+
+    def tearDown(self):
+        self.history_patch.stop()
+        self.path_patch.stop()
+        self.temp_dir.cleanup()
+
+    def _load_config(self):
+        return json.loads(self.config_path.read_text(encoding="utf-8"))
+
+    def _load_json(self, path):
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def _baseline_text(self, name):
+        return (personal_data_reset.BASELINE_PROMPTS_DIR / name).read_text(
+            encoding="utf-8"
+        )
+
+    def test_reset_keeps_api_keys_when_toggle_is_off(self):
+        summary = personal_data_reset.reset_personal_data(delete_api_keys=False)
+
+        config = self._load_config()
+        self.assertEqual(config["gemini_api_key"], "gemini-key")
+        self.assertEqual(config["groq_api_key"], "groq-key")
+        self.assertEqual(config["cached_models_gemini"], [])
+        self.assertEqual(config["cached_models_groq"], [])
+        self.assertEqual(config["selected_api_model"], "")
+        self.assertNotIn("ui_state", config)
+
+        self.assertEqual(self._load_json(self.cameras_path), [])
+        self.assertEqual(self._load_json(self.lora_path), [])
+        self.assertEqual(self._load_json(self.profiles_path), {})
+        self.assertEqual(history_db.fetch_recent_generations(), [])
+        self.assertFalse(self.rough_path.exists())
+        self.assertFalse((self.text_dir / "CustomPrompt.txt").exists())
+        self.assertFalse((self.vision_dir / "CustomVision.txt").exists())
+
+        self.assertEqual(summary["history_entries_deleted"], 2)
+        self.assertEqual(summary["prompts_removed"], 2)
+        self.assertEqual(summary["errors"], [])
+        self.assertFalse(summary["api_keys_deleted"])
+
+    def test_reset_keeps_baseline_prompts_intact(self):
+        personal_data_reset.reset_personal_data(delete_api_keys=True)
+
+        for directory, name in (
+            (self.text_dir, "single_prompt.txt"),
+            (self.text_dir, "multi_prompt.txt"),
+            (self.vision_dir, "image_to_prompt.txt"),
+        ):
+            with self.subTest(name=name):
+                self.assertTrue((directory / name).is_file())
+                self.assertEqual(
+                    (directory / name).read_text(encoding="utf-8"),
+                    self._baseline_text(name),
+                )
+
+    def test_reset_restores_deleted_baseline_prompts(self):
+        self.text_dir.joinpath("single_prompt.txt").unlink()
+        self.vision_dir.joinpath("image_to_prompt.txt").unlink()
+
+        summary = personal_data_reset.reset_personal_data(delete_api_keys=False)
+
+        self.assertEqual(
+            self.text_dir.joinpath("single_prompt.txt").read_text(encoding="utf-8"),
+            self._baseline_text("single_prompt.txt"),
+        )
+        self.assertEqual(
+            self.vision_dir.joinpath("image_to_prompt.txt").read_text(
+                encoding="utf-8"
+            ),
+            self._baseline_text("image_to_prompt.txt"),
+        )
+        self.assertEqual(
+            sorted(summary["baseline_prompts"]),
+            ["image_to_prompt.txt", "multi_prompt.txt", "single_prompt.txt"],
+        )
+
+    def test_reset_deletes_api_keys_when_toggle_is_on(self):
+        summary = personal_data_reset.reset_personal_data(delete_api_keys=True)
+
+        config = self._load_config()
+        self.assertEqual(config["gemini_api_key"], "")
+        self.assertEqual(config["groq_api_key"], "")
+        self.assertTrue(summary["api_keys_deleted"])
+
+    def test_reset_tolerates_missing_files(self):
+        self.config_path.unlink()
+        self.rough_path.unlink()
+        self.history_path.unlink()
+        for path in self.json_files:
+            path.unlink()
+        (self.text_dir / "CustomPrompt.txt").unlink()
+        (self.vision_dir / "CustomVision.txt").unlink()
+
+        summary = personal_data_reset.reset_personal_data(delete_api_keys=False)
+
+        self.assertEqual(summary["errors"], [])
+        self.assertEqual(summary["prompts_removed"], 0)
+        self.assertEqual(summary["history_entries_deleted"], 0)
+        self.assertEqual(self._load_config()["gemini_api_key"], "")
+        self.assertEqual(history_db.fetch_recent_generations(), [])
+        self.assertTrue((self.text_dir / "multi_prompt.txt").is_file())
+        self.assertTrue((self.vision_dir / "image_to_prompt.txt").is_file())
+
+
+class GeminiModelFetchTests(unittest.TestCase):
+    def test_unusable_catalog_returns_message_instead_of_fallback(self):
+        fake_model = SimpleNamespace(
+            name="models/gemini-embedding-001",
+            supported_actions=["embedContent"],
+        )
+        fake_genai = SimpleNamespace(
+            Client=lambda api_key: SimpleNamespace(
+                models=SimpleNamespace(list=lambda: [fake_model])
+            )
+        )
+        fake_google = SimpleNamespace(genai=fake_genai)
+
+        with patch.dict(
+            "sys.modules", {"google": fake_google, "google.genai": fake_genai}
+        ):
+            models, message = model_catalog.fetch_provider_models("Gemini", "key")
+
+        self.assertEqual(models, [])
+        self.assertIsNotNone(message)
+
+
+class AppFilesBootstrapTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        root = Path(self.temp_dir.name)
+        self.text_dir = root / "system_prompts"
+        self.vision_dir = root / "system_prompts_vision"
+        self.defaults_dir = root / "defaults"
+        self.defaults_dir.mkdir()
+        for name in ("single_prompt.txt", "multi_prompt.txt", "image_to_prompt.txt"):
+            (self.defaults_dir / name).write_text(
+                f"baseline {name}\n", encoding="utf-8"
+            )
+        self.patcher = patch.multiple(
+            app_files,
+            APP_DIR=root,
+            CONFIG_PATH=root / "config.json",
+            DATA_DIR=root / "data",
+            SYSTEM_PROMPTS_DIR=self.text_dir,
+            VISION_SYSTEM_PROMPTS_DIR=self.vision_dir,
+            BASELINE_PROMPTS_DIR=self.defaults_dir,
+            BASELINE_PROMPTS={
+                self.text_dir: ("single_prompt.txt", "multi_prompt.txt"),
+                self.vision_dir: ("image_to_prompt.txt",),
+            },
+            LEGACY_BOOTSTRAP_PROMPTS={
+                self.text_dir: ("Flux-2-Klein.txt",),
+                self.vision_dir: ("Vision-Default.txt",),
+            },
+            DEFAULT_JSON_FILES={},
+        )
+        self.patcher.start()
+        self.history_patcher = patch.object(app_files, "initialize_history_database")
+        self.history_patcher.start()
+
+    def tearDown(self):
+        self.history_patcher.stop()
+        self.patcher.stop()
+        self.temp_dir.cleanup()
+
+    def _prompt_names(self, directory):
+        return sorted(path.name for path in directory.glob("*.txt"))
+
+    def test_first_run_seeds_only_baseline_prompts(self):
+        app_files.ensure_app_files()
+
+        self.assertEqual(
+            self._prompt_names(self.text_dir),
+            ["multi_prompt.txt", "single_prompt.txt"],
+        )
+        self.assertEqual(
+            self._prompt_names(self.vision_dir), ["image_to_prompt.txt"]
+        )
+        self.assertEqual(
+            (self.text_dir / "single_prompt.txt").read_text(encoding="utf-8"),
+            "baseline single_prompt.txt\n",
+        )
+
+    def test_first_run_replaces_legacy_bootstrap_prompts(self):
+        self.text_dir.mkdir()
+        (self.text_dir / "Flux-2-Klein.txt").write_text("legacy\n", encoding="utf-8")
+        self.vision_dir.mkdir()
+        (self.vision_dir / "Vision-Default.txt").write_text(
+            "legacy\n", encoding="utf-8"
+        )
+
+        app_files.ensure_app_files()
+
+        self.assertEqual(
+            self._prompt_names(self.text_dir),
+            ["multi_prompt.txt", "single_prompt.txt"],
+        )
+        self.assertEqual(
+            self._prompt_names(self.vision_dir), ["image_to_prompt.txt"]
+        )
+
+    def test_existing_user_prompts_are_kept(self):
+        self.text_dir.mkdir()
+        (self.text_dir / "MyPrompt.txt").write_text("mine\n", encoding="utf-8")
+        self.vision_dir.mkdir()
+
+        app_files.ensure_app_files()
+
+        self.assertEqual(self._prompt_names(self.text_dir), ["MyPrompt.txt"])
+        self.assertEqual(
+            self._prompt_names(self.vision_dir), ["image_to_prompt.txt"]
+        )
+
+    def test_missing_baseline_source_raises(self):
+        self.defaults_dir.joinpath("single_prompt.txt").unlink()
+
+        with self.assertRaises(FileNotFoundError):
+            app_files.ensure_app_files()
+
+
+class _GeneratorErrorHost(GeneratorTabMixin, tkinter.Frame):
+    def __init__(self, master):
+        tkinter.Frame.__init__(self, master)
+        self._status_wrap_job = None
+        self._status_wrap_width = None
+        self._status_wrap_busy = False
+        self.generate_button = tkinter.Button(self, state="normal")
+        self.rough_idea_text = tkinter.Text(self)
+        self.rough_idea_text.insert("1.0", "A lone lighthouse at dusk")
+        self.status_label = ctk.CTkLabel(self, text="Ready", wraplength=400)
+        self.status_label.pack()
+        self.model_menu = SimpleNamespace(get=lambda: "single_prompt")
+        self.lora_menu = SimpleNamespace(get=lambda: "None")
+        self.camera_menu = SimpleNamespace(get=lambda: "None / Auto")
+        self.engine_menu = SimpleNamespace(get=lambda: "Gemini")
+        self.lora_profiles = []
+
+
+class GeneratorStatusWrapTests(unittest.TestCase):
+    def setUp(self):
+        try:
+            self.root = tkinter.Tk()
+        except tkinter.TclError:
+            self.skipTest("Tk is unavailable")
+        self.root.withdraw()
+        self.errors = []
+        self.root.report_callback_exception = (
+            lambda exc, val, tb: self.errors.append(val)
+        )
+        self.host = _GeneratorErrorHost(self.root)
+        self.host.pack()
+        self.root.update_idletasks()
+
+    def tearDown(self):
+        try:
+            self.root.destroy()
+        except tkinter.TclError:
+            pass
+
+    def _pump(self, seconds):
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            self.root.update()
+            time.sleep(0.01)
+
+    def test_missing_api_key_error_has_no_recursive_wrap_loop(self):
+        with patch.object(generator_tab, "load_config", return_value={}):
+            self.host._generate_prompt()
+
+        self.assertIn("API Key missing", self.host.status_label.cget("text"))
+        self.assertEqual(self.errors, [])
+
+        configure_calls = []
+        original_configure = self.host.status_label.configure
+
+        def reentrant_configure(**kwargs):
+            configure_calls.append(kwargs.get("wraplength"))
+            if len(configure_calls) > 25:
+                raise RecursionError("recursive wraplength configure loop")
+            # Simulate the <Configure> Tk may dispatch while the label resizes:
+            # the new width feeds straight back into the scheduler.
+            self.host._update_status_wraplength(
+                SimpleNamespace(width=int(kwargs.get("wraplength", 200)) + 24)
+            )
+            return original_configure(**kwargs)
+
+        self.host.status_label.configure = reentrant_configure
+        for width in (329, 780, 340, 520, 340, 940, 329):
+            self.host._update_status_wraplength(SimpleNamespace(width=width))
+            self._pump(0.12)
+        self._pump(0.3)
+
+        self.assertLessEqual(len(configure_calls), 25)
+        self.assertEqual(self.errors, [])
+        self.assertIsNone(self.host._status_wrap_job)
+
+    def test_nested_apply_callback_is_ignored(self):
+        configure_calls = []
+        original_configure = self.host.status_label.configure
+
+        def nested_apply_configure(**kwargs):
+            self.host._apply_status_wraplength(999)
+            configure_calls.append(kwargs.get("wraplength"))
+            return original_configure(**kwargs)
+
+        self.host.status_label.configure = nested_apply_configure
+        self.host._apply_status_wraplength(321)
+
+        self.assertEqual(configure_calls, [321])
+
+    def test_wraplength_update_is_deferred_not_synchronous(self):
+        self.host._update_status_wraplength(SimpleNamespace(width=640))
+        self.assertIsNotNone(self.host._status_wrap_job)
+        self.assertEqual(self.host.status_label.cget("wraplength"), 400)
+
+        self._pump(0.2)
+        self.assertEqual(self.host.status_label.cget("wraplength"), 616)
+        self.assertIsNone(self.host._status_wrap_job)
+
+
+class TooltipPositionTests(unittest.TestCase):
+    def test_keeps_position_inside_secondary_monitor(self):
+        work_area = (1920, 0, 3600, 1032)
+
+        self.assertEqual(
+            clamp_tooltip_position(2500, 500, 300, 100, work_area),
+            (2500, 500),
+        )
+        self.assertEqual(
+            clamp_tooltip_position(3590, 1030, 300, 100, work_area),
+            (3296, 928),
+        )
+        self.assertEqual(
+            clamp_tooltip_position(1900, 300, 300, 100, work_area),
+            (1924, 300),
+        )
+
+    def test_keeps_position_inside_left_monitor(self):
+        work_area = (-1920, 0, 0, 1032)
+
+        self.assertEqual(
+            clamp_tooltip_position(-1930, 10, 300, 100, work_area),
+            (-1916, 10),
+        )
+
+    def test_oversized_tooltip_anchors_to_work_area_corner(self):
+        work_area = (0, 0, 200, 100)
+
+        self.assertEqual(
+            clamp_tooltip_position(50, 50, 300, 200, work_area),
+            (4, 4),
+        )
+
+
+class HelpContentTests(unittest.TestCase):
+    def test_cloud_api_and_lm_studio_links(self):
+        self.assertEqual(
+            dict(HELP_LINKS),
+            {
+                "Google Gemini API (Google AI Studio)": (
+                    "https://aistudio.google.com/"
+                ),
+                "Groq API": "https://console.groq.com/",
+                "LM Studio": "https://lmstudio.ai/",
+            },
+        )
+
+    def test_intro_entries_include_overview_context_and_all_links(self):
+        entries = HelpTabMixin._help_intro_entries(None)
+        links = [value for tag, value in entries if tag == "link"]
+        text = "".join(
+            value if isinstance(value, str) else value[1] for _, value in entries
+        )
+        self.assertIn(("LM Studio", "https://lmstudio.ai/"), links)
+        self.assertIn(
+            ("Google Gemini API (Google AI Studio)", "https://aistudio.google.com/"),
+            links,
+        )
+        self.assertIn(("Groq API", "https://console.groq.com/"), links)
+        self.assertIn("PWLP was tested with", text)
+        for phrase in (
+            "System prompt matters most",
+            "free cloud key",
+            "GPU VRAM usage",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, text)
+
+    def test_license_entries_cover_disclaimer(self):
+        text = " ".join(
+            value if isinstance(value, str) else value[1]
+            for _, value in LICENSE_ENTRIES
+        ).lower()
+        for phrase in (
+            "mit license",
+            "permission is hereby granted",
+            "completely free",
+            "as-is",
+            "warranty",
+            "responsible",
+            "liability",
+            "data loss",
+            "third-party",
+            "lm studio",
+            "gemini",
+            "groq",
+            "not affiliated",
+            "endorsed",
+            "ko-fi",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, text)
+
+    def test_license_entries_include_kofi_link(self):
+        links = [value for tag, value in LICENSE_ENTRIES if tag == "link"]
+        self.assertIn(("Ko-fi", KOFI_URL), links)
+
+
+class ReleaseFilesTests(unittest.TestCase):
+    root = Path(__file__).resolve().parent.parent
+
+    def test_requirements_include_tkinterdnd2_and_drop_unused_groq(self):
+        text = (self.root / "requirements.txt").read_text(encoding="utf-8")
+        names = {
+            re.split(r"[<>=!~\s]", line.strip(), maxsplit=1)[0].lower()
+            for line in text.splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        }
+        self.assertIn("tkinterdnd2", names)
+        self.assertNotIn("groq", names)
+
+    def test_root_license_is_mit(self):
+        text = (self.root / "LICENSE").read_text(encoding="utf-8")
+        self.assertIn("MIT License", text)
+        self.assertIn("Copyright (c) 2026 The PWLP Authors", text)
+        self.assertIn("Permission is hereby granted", text)
+
+    def test_readme_documents_setup_and_safety_notes(self):
+        text = (self.root / "README.md").read_text(encoding="utf-8")
+        for phrase in (
+            "pip install -r requirements.txt",
+            "LM Studio",
+            "Gemini",
+            "Groq",
+            "NVIDIA",
+            "Reset / Delete All Personal Data",
+            "https://ko-fi.com/promptwriter",
+            "as-is",
+            "MIT License",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, text)
+
+    def test_third_party_notices_cover_bundled_components(self):
+        text = (self.root / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
+        for phrase in (
+            "CustomTkinter",
+            "tkinterdnd2",
+            "TkDND",
+            "Requests",
+            "Pillow",
+            "nvidia-ml-py",
+            "Roboto",
+            "Apache License 2.0",
+            "MPL-2.0",
+            "PSF License 2.0",
+            "George Petasis",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, text)
+
+
+class _HelpTabHost(tkinter.Frame, HelpTabMixin):
+    def __init__(self, master):
+        super().__init__(master)
+        self.help_tab = tkinter.Frame(self)
+        self.help_tab.pack(fill="both", expand=True)
+
+    def _add_tooltip(self, widget, text):
+        return None
+
+
+class HelpTabLayoutTests(unittest.TestCase):
+    def setUp(self):
+        try:
+            self.root = tkinter.Tk()
+        except tkinter.TclError:
+            self.skipTest("Tk is unavailable")
+        self.root.withdraw()
+        self.host = _HelpTabHost(self.root)
+        self.host.pack(fill="both", expand=True)
+        self.host._build_help_tab()
+        self.root.update_idletasks()
+
+    def tearDown(self):
+        try:
+            self.root.destroy()
+        except tkinter.TclError:
+            pass
+
+    def test_inner_tabs_exist(self):
+        tabview = self.host.help_tabview
+        self.assertIsNotNone(tabview.tab(HELP_GUIDE_TAB))
+        self.assertIsNotNone(tabview.tab(HELP_LICENSE_TAB))
+        self.assertEqual(HELP_GUIDE_TAB, "Guide / Usage")
+        self.assertEqual(HELP_LICENSE_TAB, "License & Disclaimer")
+
+    def test_kofi_button_sits_between_intro_and_guide(self):
+        rows = (
+            int(self.host.help_intro_text.grid_info()["row"]),
+            int(self.host.kofi_button.grid_info()["row"]),
+            int(self.host.help_text.grid_info()["row"]),
+        )
+        self.assertEqual(rows, (0, 1, 2))
+        self.assertEqual(
+            self.host.kofi_button.cget("text"), "Support PWLP on Ko-fi"
+        )
+
+    def test_intro_renders_clickable_lm_studio_link(self):
+        raw = self.host.help_intro_text._textbox
+        link_tags = [tag for tag in raw.tag_names() if tag.startswith("link_")]
+        self.assertEqual(len(link_tags), 3)
+        self.assertIn("https://lmstudio.ai/", raw.get("1.0", "end"))
+        self.assertTrue(
+            raw.tk.call(raw._w, "tag", "bind", link_tags[0], "<Button-1>")
+        )
+        self.assertEqual(KOFI_URL, "https://ko-fi.com/promptwriter")
+
+    def test_guide_starts_with_generator_tab_after_kofi(self):
+        intro = self.host.help_intro_text._textbox.get("1.0", "end")
+        guide = self.host.help_text._textbox.get("1.0", "end")
+        for context in (
+            "System prompt matters most",
+            "free cloud key",
+            "GPU VRAM usage",
+        ):
+            with self.subTest(phrase=context):
+                self.assertIn(context, intro)
+                self.assertNotIn(context, guide)
+        first_line = next(line for line in guide.splitlines() if line.strip())
+        self.assertEqual(first_line.strip(), "Generator tab")
+        for heading in (
+            "Generator tab",
+            "Image to Prompt tab",
+            "Settings tab",
+            "History tab",
+        ):
+            with self.subTest(heading=heading):
+                self.assertIn(heading, guide)
+
+    def test_license_tab_renders_disclaimer(self):
+        raw = self.host.help_license_text._textbox
+        text = raw.get("1.0", "end")
+        lowered = text.lower()
+        self.assertIn("mit license", lowered)
+        self.assertIn("permission is hereby granted", lowered)
+        self.assertIn("as-is", lowered)
+        self.assertIn("no liability", lowered)
+        self.assertIn("third-party names", lowered)
+        self.assertIn(KOFI_URL, text)
+        link_tags = [tag for tag in raw.tag_names() if tag.startswith("link_")]
+        self.assertTrue(link_tags)
+        self.assertTrue(
+            raw.tk.call(
+                raw._w, "tag", "bind", link_tags[-1], "<Button-1>"
+            )
+        )
+
+    def test_intro_height_fits_content_and_caps_for_guide(self):
+        host = self.host
+        with (
+            patch.object(
+                host.help_intro_text._textbox, "count", return_value=(204,)
+            ),
+            patch.object(host.help_tabview, "winfo_height", return_value=600),
+        ):
+            host._fit_help_intro_height()
+        self.assertEqual(int(float(host.help_intro_text.cget("height"))), 214)
+
+        with (
+            patch.object(
+                host.help_intro_text._textbox, "count", return_value=(1000,)
+            ),
+            patch.object(host.help_tabview, "winfo_height", return_value=600),
+        ):
+            host._fit_help_intro_height()
+        self.assertEqual(int(float(host.help_intro_text.cget("height"))), 330)
+
+    def test_kofi_button_opens_browser_safely(self):
+        with patch.object(
+            help_tab.webbrowser, "open", return_value=True
+        ) as opener:
+            self.assertTrue(self.host._open_kofi())
+        opener.assert_called_once_with(KOFI_URL, new=2)
+
+        with patch.object(
+            help_tab.webbrowser, "open", side_effect=OSError("no browser")
+        ):
+            self.assertFalse(self.host._open_kofi())
+
+
+class TooltipDismissBindingTests(unittest.TestCase):
+    def setUp(self):
+        try:
+            self.root = tkinter.Tk()
+        except tkinter.TclError:
+            self.skipTest("Tk is unavailable")
+        self.root.withdraw()
+        self.frame = tkinter.Frame(self.root)
+        self.frame.pack()
+
+    def tearDown(self):
+        try:
+            self.root.destroy()
+        except tkinter.TclError:
+            pass
+
+    def _bind_script(self, sequence):
+        return self.root.tk.call("bind", self.root._w, sequence) or ""
+
+    def _add_labels(self, count, prefix):
+        for index in range(count):
+            label = tkinter.Label(self.frame, text=f"{prefix} {index}")
+            label.pack()
+            ToolTip(label, f"{prefix} tip {index}")
+
+    def test_toplevel_dismiss_bindings_do_not_grow_with_tooltips(self):
+        self._add_labels(3, "first")
+        unmap_before = self._bind_script("<Unmap>")
+        focus_before = self._bind_script("<FocusOut>")
+
+        self._add_labels(40, "extra")
+
+        self.assertEqual(self._bind_script("<Unmap>"), unmap_before)
+        self.assertEqual(self._bind_script("<FocusOut>"), focus_before)
+        self.assertLess(len(unmap_before), 1000)
+
+    def test_hide_without_open_window_is_a_no_op(self):
+        label = tkinter.Label(self.frame, text="x")
+        label.pack()
+        tooltip = ToolTip(label, "tip")
+
+        tooltip._hide()
+
+        self.assertIsNone(tooltip._window)
 
 
 if __name__ == "__main__":

@@ -5,9 +5,11 @@ from promptwriter.storage.app_files import read_json, write_json
 
 PROFILE_MODES = ("text", "vision")
 LOCAL_ONLY_FIELDS = ("min_p", "repeat_penalty", "context_length")
+PRESENCE_PENALTY_ENGINES = ("Groq", LOCAL_ENGINE)
 PROFILE_FIELDS = (
     "temperature",
     "top_p",
+    "presence_penalty",
     "min_p",
     "repeat_penalty",
     "max_tokens",
@@ -16,6 +18,12 @@ PROFILE_FIELDS = (
 )
 CONTEXT_LENGTH_CHOICES = (None, 4096, 8192, 16384, 32768)
 DEFAULT_MAX_TOKENS = {"Groq": 6500, LOCAL_ENGINE: 2048}
+TEMPERATURE_MAX = 1.0
+PRESENCE_PENALTY_MAX = 2.0
+
+
+def supports_presence_penalty(engine):
+    return engine in PRESENCE_PENALTY_ENGINES
 
 
 def default_profile(engine, mode):
@@ -24,6 +32,7 @@ def default_profile(engine, mode):
     return {
         "temperature": 0.1 if mode == "vision" else 0.7,
         "top_p": 0.2 if mode == "vision" else 0.95,
+        "presence_penalty": 0.0,
         "min_p": None,
         "repeat_penalty": None,
         "max_tokens": DEFAULT_MAX_TOKENS.get(engine),
@@ -56,10 +65,15 @@ def merge_profile(saved, engine, mode):
 
     temperature = _number(saved.get("temperature"), 0.0, 2.0)
     if temperature is not None:
-        profile["temperature"] = temperature
+        profile["temperature"] = min(temperature, TEMPERATURE_MAX)
     top_p = _number(saved.get("top_p"), 0.0, 1.0)
     if top_p is not None:
         profile["top_p"] = top_p
+    presence_penalty = _number(
+        saved.get("presence_penalty"), 0.0, PRESENCE_PENALTY_MAX
+    )
+    if presence_penalty is not None:
+        profile["presence_penalty"] = presence_penalty
     min_p = _number(saved.get("min_p"), 0.0, 1.0)
     if min_p is not None:
         profile["min_p"] = min_p
@@ -183,6 +197,12 @@ def profile_request_kwargs(engine, profile):
         "top_p": profile.get("top_p"),
         "max_tokens": profile.get("max_tokens"),
     }
+    if supports_presence_penalty(engine):
+        presence_penalty = _number(
+            profile.get("presence_penalty"), 0.0, PRESENCE_PENALTY_MAX
+        )
+        if presence_penalty is not None and presence_penalty > 0.0:
+            kwargs["presence_penalty"] = presence_penalty
     if engine == LOCAL_ENGINE:
         kwargs["min_p"] = profile.get("min_p")
         kwargs["repeat_penalty"] = profile.get("repeat_penalty")
@@ -206,26 +226,52 @@ def format_profile_summary(engine, profile, has_saved, temperature=None):
     temperature = (
         profile.get("temperature") if temperature is None else temperature
     )
-    parts = [f"Temp: {float(temperature):.2f}"]
-    if engine == LOCAL_ENGINE:
-        context_length = profile.get("context_length")
-        parts.append(
-            "Ctx: Auto" if context_length is None else f"Ctx: {context_length}"
-        )
-    max_tokens = profile.get("max_tokens")
-    if max_tokens is not None:
-        parts.append(f"Max: {max_tokens}")
+
+    def pair(label, value):
+        return f"{label}:\u00A0{value}"
+
+    sampling = [pair("Temp", f"{float(temperature):.2f}")]
     top_p = profile.get("top_p")
     if top_p is not None:
-        parts.append(f"Top-P: {top_p:g}")
+        sampling.append(pair("Top-P", f"{top_p:g}"))
+
+    output = []
+    presence_penalty = None
+    if supports_presence_penalty(engine):
+        presence_penalty = _number(
+            profile.get("presence_penalty"), 0.0, PRESENCE_PENALTY_MAX
+        )
+        if presence_penalty is not None and not presence_penalty > 0.0:
+            presence_penalty = None
+
     if engine == LOCAL_ENGINE:
         min_p = profile.get("min_p")
         if min_p is not None:
-            parts.append(f"Min-P: {min_p:g}")
+            sampling.append(pair("Min-P", f"{min_p:g}"))
+        if presence_penalty is not None:
+            sampling.append(pair("Pres", f"{presence_penalty:g}"))
+        context_length = profile.get("context_length")
+        output.append(
+            pair(
+                "Ctx",
+                "Auto" if context_length is None else str(context_length),
+            )
+        )
+        max_tokens = profile.get("max_tokens")
+        if max_tokens is not None:
+            output.append(pair("Max", str(max_tokens)))
         repeat_penalty = profile.get("repeat_penalty")
         if repeat_penalty is not None:
-            parts.append(f"Repeat: {repeat_penalty:g}")
-        parts.append(
-            "Think: Off" if profile.get("disable_thinking") else "Think: On"
+            output.append(pair("Repeat", f"{repeat_penalty:g}"))
+        output.append(
+            pair("Think", "Off" if profile.get("disable_thinking") else "On")
         )
-    return " · ".join(parts)
+    else:
+        if presence_penalty is not None:
+            output.append(pair("Pres", f"{presence_penalty:g}"))
+        max_tokens = profile.get("max_tokens")
+        if max_tokens is not None:
+            output.append(pair("Max", str(max_tokens)))
+
+    rows = [row for row in (sampling, output) if row]
+    return "\n".join(" · ".join(row) for row in rows)

@@ -2,7 +2,6 @@ import requests
 
 from promptwriter.config import (
     GEMINI_EXCLUDED_MODEL_TERMS,
-    GEMINI_FALLBACK_MODELS,
     GROQ_EXCLUDED_MODEL_TERMS,
 )
 from promptwriter.storage.config_store import get_lm_studio_base_url
@@ -79,9 +78,8 @@ def fetch_provider_models(engine, api_key, base_url=None):
         models = filter_gemini_models(client.models.list())
         if not models:
             return (
-                GEMINI_FALLBACK_MODELS.copy(),
-                "No standard text-generation Gemini models were returned; "
-                "showing fallback models.",
+                [],
+                "No standard text-generation Gemini models were returned.",
             )
         return sorted(set(model for model in models if model)), None
 

@@ -1,1 +1,0 @@
-Expand the user's rough idea into a clear, vivid, detailed English text-to-image prompt suitable for the selected image model. Preserve the user's intent, describe the subject, composition, environment, lighting, color, materials, and visual style where relevant, and return only the finished prompt. Do not use negative prompts or weighted-token syntax.

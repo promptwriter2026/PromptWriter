@@ -11,6 +11,16 @@ DEFAULT_TEXT_TOP_P = 0.95
 DEFAULT_VISION_TOP_P = 0.2
 DEFAULT_GROQ_MAX_TOKENS = 6500
 DEFAULT_LOCAL_MAX_TOKENS = 2048
+MAX_PRESENCE_PENALTY = 2.0
+
+
+def _presence_penalty_value(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    penalty = float(value)
+    if not 0.0 < penalty <= MAX_PRESENCE_PENALTY:
+        return None
+    return penalty
 
 
 def _split_request_text(request_text, system_prompt):
@@ -59,6 +69,7 @@ def request_generated_prompt(
     temperature=0.7,
     system_prompt=None,
     top_p=None,
+    presence_penalty=None,
     min_p=None,
     repeat_penalty=None,
     max_tokens=None,
@@ -115,6 +126,9 @@ def request_generated_prompt(
                 DEFAULT_GROQ_MAX_TOKENS if max_tokens is None else max_tokens
             ),
         }
+        presence = _presence_penalty_value(presence_penalty)
+        if presence is not None:
+            payload["presence_penalty"] = presence
     elif engine == LOCAL_ENGINE:
         lm_base_url = (base_url or get_lm_studio_base_url()).rstrip("/")
         url = f"{lm_base_url}/v1/chat/completions"
@@ -133,6 +147,9 @@ def request_generated_prompt(
                 DEFAULT_LOCAL_MAX_TOKENS if max_tokens is None else max_tokens
             ),
         }
+        presence = _presence_penalty_value(presence_penalty)
+        if presence is not None:
+            payload["presence_penalty"] = presence
         if disable_thinking:
             # LM Studio rejects "off"; "none" is its supported disable value.
             payload["reasoning_effort"] = "none"

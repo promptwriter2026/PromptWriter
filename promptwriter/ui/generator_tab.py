@@ -11,6 +11,7 @@ import requests
 from promptwriter.config import (
     LLM_ENGINES,
     LOCAL_ENGINE,
+    MODEL_PLACEHOLDER,
     ROUGH_IDEA_CACHE_PATH,
     SYSTEM_PROMPTS_DIR,
 )
@@ -63,7 +64,7 @@ class GeneratorTabMixin:
         api_model_frame.grid_columnconfigure(0, weight=1)
         self.api_model_menu = ctk.CTkComboBox(
             api_model_frame,
-            values=["Fetch models first"],
+            values=[MODEL_PLACEHOLDER],
             state="readonly",
             command=self._on_api_model_changed,
         )
@@ -93,7 +94,7 @@ class GeneratorTabMixin:
             "Edit sampling settings for the selected model.",
         )
 
-        ctk.CTkLabel(tab, text="Target model").grid(
+        ctk.CTkLabel(tab, text="System prompt").grid(
             row=2, column=0, padx=12, pady=(4, 2), sticky="w"
         )
         self.model_menu = ctk.CTkOptionMenu(
@@ -102,7 +103,7 @@ class GeneratorTabMixin:
         self.model_menu.grid(row=3, column=0, padx=12, pady=(0, 8), sticky="ew")
         self._add_tooltip(
             self.model_menu,
-            "Select the image generator you are writing this prompt for.",
+            "Choose the system prompt that defines how generated prompts are written.",
         )
 
         ctk.CTkLabel(tab, text="Camera / lens").grid(
@@ -134,33 +135,40 @@ class GeneratorTabMixin:
         self.generator_temperature_frame = generator_temperature_frame
         self._generator_controls_minheight = 0
         self._generator_controls_sync_active = False
+        self._generator_controls_sync_pending = False
+        self._generator_controls_wrap_width = None
+        self._generator_controls_wrap_job = None
+        self._status_wrap_job = None
+        self._status_wrap_width = None
+        self._status_wrap_busy = False
         self.generator_temp_label = ctk.CTkLabel(
-            generator_temperature_frame, text="Temp: 0.70"
+            generator_temperature_frame, text="Temp: 0.70", height=20
         )
         self.generator_temp_label.grid(row=0, column=0, padx=(0, 8), sticky="w")
         self.generator_temp_slider = ctk.CTkSlider(
             generator_temperature_frame,
             from_=0.0,
-            to=1.5,
-            number_of_steps=150,
+            to=1.0,
+            number_of_steps=100,
             variable=self.generator_temp_var,
             command=self._update_generator_temp_label,
         )
         self.generator_temp_slider.grid(row=0, column=1, sticky="ew")
         self._add_tooltip(
             self.generator_temp_slider,
-            "Adjust how varied or predictable text prompt generation is.",
+            "Adjust text prompt variety from 0.00 to 1.00; saved values above 1.00 are capped.",
         )
         self.generator_profile_label = ctk.CTkLabel(
             generator_temperature_frame,
             text="Default profile",
             text_color="gray",
             anchor="w",
+            justify="left",
             height=18,
             font=ctk.CTkFont(size=11),
         )
         self.generator_profile_label.grid(
-            row=1, column=0, columnspan=2, pady=(4, 0), sticky="ew"
+            row=1, column=0, columnspan=2, pady=(2, 0), sticky="ew"
         )
         self._add_tooltip(
             self.generator_profile_label,
@@ -172,26 +180,40 @@ class GeneratorTabMixin:
             variable=self.auto_unload_var,
         )
         self.generator_auto_unload_checkbox.grid(
-            row=2, column=0, padx=(0, 8), pady=(8, 0), sticky="w"
+            row=2, column=0, padx=(0, 8), pady=(4, 0), sticky="w"
+        )
+        self._add_tooltip(
+            self.generator_auto_unload_checkbox,
+            "Automatically unload the Local model from VRAM after each generation.",
         )
         self.generator_clear_vram_button = ctk.CTkButton(
             generator_temperature_frame,
             text="Unload Model",
             width=120,
+            height=24,
             command=self._clear_lm_studio_vram,
         )
         self.generator_clear_vram_button.grid(
-            row=2, column=1, pady=(8, 0), sticky="ew"
+            row=2, column=1, padx=(8, 0), pady=(4, 0), sticky="w"
+        )
+        self._add_tooltip(
+            self.generator_clear_vram_button,
+            "Unload the Local model from LM Studio and free VRAM now.",
         )
         self.generator_lm_studio_status_label = ctk.CTkLabel(
             generator_temperature_frame,
             text="LM Studio Status: [Checking...]",
             anchor="w",
             justify="left",
+            height=18,
             wraplength=320,
         )
         self.generator_lm_studio_status_label.grid(
             row=4, column=0, columnspan=2, pady=(4, 0), sticky="ew"
+        )
+        self._add_tooltip(
+            self.generator_lm_studio_status_label,
+            "Shows which model is currently loaded in LM Studio.",
         )
         generator_temperature_frame.bind(
             "<Configure>", self._update_generator_controls_layout
@@ -271,6 +293,10 @@ class GeneratorTabMixin:
             variable=self.force_single_line_var,
         )
         self.generator_single_line_checkbox.grid(row=0, column=1, sticky="e")
+        self._add_tooltip(
+            self.generator_single_line_checkbox,
+            "Collapse multi-line output into clean single-line prompts.",
+        )
         self.output_text = ctk.CTkTextbox(tab, wrap="word")
         self.output_text.grid(
             row=9, column=0, columnspan=2, padx=12, pady=(0, 6), sticky="nsew"
@@ -346,24 +372,90 @@ class GeneratorTabMixin:
         self.generator_temp_label.configure(text=f"Temp: {temperature:.2f}")
         self._update_profile_summary("text")
 
+    _WRAP_DEBOUNCE_MS = 30
+    _WRAP_HYSTERESIS_PX = 8
+
     def _update_status_wraplength(self, event):
-        wraplength = max(200, event.width - 24)
-        if self.status_label.cget("wraplength") != wraplength:
-            self.status_label.configure(wraplength=wraplength)
+        width = int(event.width)
+        previous_width = self._status_wrap_width
+        if previous_width is not None:
+            if abs(width - previous_width) < self._WRAP_HYSTERESIS_PX:
+                return
+        self._status_wrap_width = width
+        if self._status_wrap_job is not None:
+            try:
+                self.after_cancel(self._status_wrap_job)
+            except (tkinter.TclError, ValueError):
+                pass
+        # A timer (not after_idle) keeps applying the new wraplength out of the
+        # Tk event/idle dispatch chain, so a configure cannot re-enter itself.
+        self._status_wrap_job = self.after(
+            self._WRAP_DEBOUNCE_MS,
+            self._apply_status_wraplength,
+            max(200, width - 24),
+        )
+
+    def _apply_status_wraplength(self, wraplength):
+        self._status_wrap_job = None
+        if self._status_wrap_busy:
+            return
+        self._status_wrap_busy = True
+        try:
+            if self.status_label.cget("wraplength") != wraplength:
+                self.status_label.configure(wraplength=wraplength)
+        except tkinter.TclError:
+            pass
+        finally:
+            self._status_wrap_busy = False
 
     def _update_generator_controls_layout(self, event):
         wraplength = max(180, event.width - 24)
-        if self.generator_lm_studio_status_label.cget("wraplength") != wraplength:
-            self.generator_lm_studio_status_label.configure(wraplength=wraplength)
-        self._sync_generator_controls_height()
+        previous_width = self._generator_controls_wrap_width
+        if previous_width is None or abs(wraplength - previous_width) >= (
+            self._WRAP_HYSTERESIS_PX
+        ):
+            self._generator_controls_wrap_width = wraplength
+            if self._generator_controls_wrap_job is not None:
+                try:
+                    self.after_cancel(self._generator_controls_wrap_job)
+                except (tkinter.TclError, ValueError):
+                    pass
+            self._generator_controls_wrap_job = self.after(
+                self._WRAP_DEBOUNCE_MS,
+                self._apply_generator_controls_wraplength,
+                wraplength,
+            )
+        self._schedule_generator_controls_sync()
+
+    def _apply_generator_controls_wraplength(self, wraplength):
+        self._generator_controls_wrap_job = None
+        try:
+            for label in (
+                self.generator_lm_studio_status_label,
+                self.generator_profile_label,
+            ):
+                if label.cget("wraplength") != wraplength:
+                    label.configure(wraplength=wraplength)
+        except tkinter.TclError:
+            pass
+
+    def _schedule_generator_controls_sync(self):
+        if self._generator_controls_sync_pending:
+            return
+        self._generator_controls_sync_pending = True
+        self.after(
+            self._WRAP_DEBOUNCE_MS * 2, self._sync_generator_controls_height
+        )
 
     def _sync_generator_controls_height(self):
+        self._generator_controls_sync_pending = False
         if self._generator_controls_sync_active:
             return
         self._generator_controls_sync_active = True
         try:
             frame = self.generator_temperature_frame
-            frame.update_idletasks()
+            # No update_idletasks() here: pumping idle callbacks from a layout
+            # handler can re-enter the wrap callbacks that scheduled it.
             pady = frame.grid_info().get("pady", 0)
             if isinstance(pady, (tuple, list)):
                 padding = sum(int(value) for value in pady)
@@ -373,6 +465,8 @@ class GeneratorTabMixin:
             if required_height != self._generator_controls_minheight:
                 self._generator_controls_minheight = required_height
                 self.generator_tab.grid_rowconfigure(6, minsize=required_height)
+        except (tkinter.TclError, ValueError):
+            pass
         finally:
             self._generator_controls_sync_active = False
 
@@ -416,7 +510,7 @@ class GeneratorTabMixin:
             if not isinstance(api_model, str) or not api_model.strip():
                 raise ValueError(f"Select an available {engine} API model.")
             api_model = api_model.strip()
-            if api_model == "Fetch models first":
+            if api_model == MODEL_PLACEHOLDER:
                 raise ValueError(f"Fetch and select an available {engine} API model.")
             generation_settings = {
                 "target_model": self.model_menu.get(),

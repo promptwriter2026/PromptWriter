@@ -2,9 +2,8 @@ import json
 import threading
 
 from promptwriter.config import (
-    DEFAULT_GEMINI_MODEL,
-    GEMINI_FALLBACK_MODELS,
     LOCAL_ENGINE,
+    MODEL_PLACEHOLDER,
     model_cache_key,
 )
 from promptwriter.services.model_catalog import fetch_provider_models
@@ -35,12 +34,8 @@ class ModelSelectorMixin:
 
         selected_model = selected_models.get(engine, "")
         if not models:
-            placeholder = selected_model or (
-                DEFAULT_GEMINI_MODEL if engine == "Gemini" else "Fetch models first"
-            )
-            model_list = [str(placeholder)]
-            menu.configure(values=model_list)
-            menu.set(model_list[0])
+            menu.configure(values=[MODEL_PLACEHOLDER])
+            menu.set(MODEL_PLACEHOLDER)
             return
         model_list = [str(model) for model in models]
         menu.configure(values=model_list)
@@ -55,11 +50,7 @@ class ModelSelectorMixin:
                 self.saved_vision_api_model = None
                 self.saved_vision_api_engine = None
         if selected_model not in model_list:
-            selected_model = (
-                DEFAULT_GEMINI_MODEL
-                if engine == "Gemini" and DEFAULT_GEMINI_MODEL in model_list
-                else model_list[0]
-            )
+            selected_model = model_list[0]
         menu.set(selected_model)
         selected_models[engine] = selected_model
 
@@ -84,7 +75,7 @@ class ModelSelectorMixin:
 
     def _on_api_model_changed(self, model):
         engine = self.engine_menu.get()
-        if model and model != "Fetch models first":
+        if model and model != MODEL_PLACEHOLDER:
             self.generator_selected_models[engine] = model
         self._refresh_profile("text", sync_temperature=True)
 
@@ -101,7 +92,7 @@ class ModelSelectorMixin:
 
     def _on_image_api_model_changed(self, model):
         engine = self.image_engine_menu.get()
-        if model and model != "Fetch models first":
+        if model and model != MODEL_PLACEHOLDER:
             self.vision_selected_models[engine] = model
         self._refresh_profile("vision", sync_temperature=True)
 
@@ -152,17 +143,7 @@ class ModelSelectorMixin:
         except Exception as error:
             if engine == LOCAL_ENGINE:
                 print(f"Could not fetch Local models: {error}")
-            if engine == "Gemini":
-                self.after(
-                    0,
-                    self._on_models_fetched,
-                    engine,
-                    GEMINI_FALLBACK_MODELS.copy(),
-                    f"Could not fetch Gemini models: {error}. Showing fallback models.",
-                    context,
-                )
-            else:
-                self.after(0, self._on_models_error, engine, error, context)
+            self.after(0, self._on_models_error, engine, error, context)
             return
         self.after(0, self._on_models_fetched, engine, models, fallback_message, context)
 
@@ -232,7 +213,7 @@ class ModelSelectorMixin:
             (self.image_engine_menu.get(), self.image_api_model_menu),
         ):
             if selected_engine == engine:
-                model_list = ["Fetch models first"]
+                model_list = [MODEL_PLACEHOLDER]
                 menu.configure(values=model_list)
                 menu.set(model_list[0])
                 self._refresh_profile(

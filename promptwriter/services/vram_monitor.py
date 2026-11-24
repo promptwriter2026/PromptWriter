@@ -9,6 +9,7 @@ except ImportError:
 DEFAULT_DEVICE_INDEX = 0
 BYTES_PER_GB = 1024**3
 VRAM_ERROR_LABEL = "VRAM: N/A"
+VRAM_UNSUPPORTED_LABEL = "VRAM: Not supported"
 VRAM_COLOR_GREEN = "#2e9e5b"
 VRAM_COLOR_ORANGE = "#e08a1e"
 VRAM_COLOR_RED = "#e04b4b"
@@ -20,6 +21,7 @@ _STATE_UNAVAILABLE = "unavailable"
 
 _nvml_lock = threading.Lock()
 _nvml_state = _STATE_UNINITIALIZED
+_nvml_device_supported = True
 
 
 def init_nvml():
@@ -43,8 +45,9 @@ def init_nvml():
 
 
 def shutdown_nvml():
-    global _nvml_state
+    global _nvml_state, _nvml_device_supported
     with _nvml_lock:
+        _nvml_device_supported = True
         if _nvml_state != _STATE_READY:
             _nvml_state = _STATE_UNINITIALIZED
             return
@@ -55,16 +58,34 @@ def shutdown_nvml():
         _nvml_state = _STATE_UNINITIALIZED
 
 
+def is_vram_supported():
+    """Return True when NVIDIA VRAM can be queried.
+
+    A failed device query (for example on a non-NVIDIA GPU) is cached until
+    shutdown_nvml() so polling never repeats the failing call.
+    """
+    if not init_nvml():
+        return False
+    with _nvml_lock:
+        return _nvml_device_supported
+
+
 def get_gpu_memory_usage(device_index=DEFAULT_DEVICE_INDEX):
     """Return used/total GPU memory in GB and percent, or None when unavailable."""
+    global _nvml_device_supported
     if not init_nvml():
         return None
+    with _nvml_lock:
+        if not _nvml_device_supported:
+            return None
     try:
         handle = pynvml.nvmlDeviceGetHandleByIndex(device_index)
         memory = pynvml.nvmlDeviceGetMemoryInfo(handle)
         total_bytes = float(memory.total)
         used_bytes = float(memory.used)
     except Exception:
+        with _nvml_lock:
+            _nvml_device_supported = False
         return None
     if total_bytes <= 0:
         return None
@@ -85,6 +106,15 @@ def format_vram_usage(memory):
     except (KeyError, TypeError, ValueError):
         return VRAM_ERROR_LABEL
     return f"VRAM: {used_gb:.1f} / {total_gb:.1f} GB ({percent:.0f}%)"
+
+
+def vram_label_text(memory):
+    """Header label text: usage, 'Not supported', or 'N/A'."""
+    if memory:
+        return format_vram_usage(memory)
+    if not is_vram_supported():
+        return VRAM_UNSUPPORTED_LABEL
+    return VRAM_ERROR_LABEL
 
 
 def vram_usage_color(percent):

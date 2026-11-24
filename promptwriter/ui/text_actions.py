@@ -39,21 +39,43 @@ class TextActionsMixin:
             status_label.configure(text=f"Clipboard error: {error}", text_color="red")
             return
 
-        previous_after_id = self._copy_feedback_after_ids.get(button)
+        previous_after_id = self._copy_feedback_after_ids.pop(button, None)
         if previous_after_id is not None:
-            self.after_cancel(previous_after_id)
+            try:
+                self.after_cancel(previous_after_id)
+            except tkinter.TclError:
+                pass
+        if button not in self._copy_button_defaults:
+            self._copy_button_defaults[button] = (
+                button.cget("text"),
+                button.cget("fg_color"),
+            )
+        if status_label not in self._copy_status_defaults:
+            self._copy_status_defaults[status_label] = (
+                status_label.cget("text"),
+                status_label.cget("text_color"),
+            )
         button.configure(text="Copied!", fg_color="#2e8b57")
+        status_label.configure(text="Copied!", text_color="green")
         self._copy_feedback_after_ids[button] = self.after(
             1500,
-            lambda: self._reset_copy_button(button),
+            lambda: self._reset_copy_feedback(button, status_label),
         )
 
-    def _reset_copy_button(self, button=None):
-        button = button or self.copy_button
+    def _reset_copy_feedback(self, button, status_label):
         self._copy_feedback_after_ids.pop(button, None)
-        button.configure(
-            text="Copy to Clipboard", fg_color=("#3B8ED0", "#1F6AA5")
+        button_text, button_color = self._copy_button_defaults.pop(
+            button, ("Copy to Clipboard", ("#3B8ED0", "#1F6AA5"))
         )
+        status_text, status_color = self._copy_status_defaults.pop(
+            status_label, ("", "gray")
+        )
+        try:
+            button.configure(text=button_text, fg_color=button_color)
+            if status_label.cget("text") == "Copied!":
+                status_label.configure(text=status_text, text_color=status_color)
+        except tkinter.TclError:
+            pass
 
     def _show_text_context_menu(self, event):
         self._context_text_widget = event.widget

@@ -5,6 +5,8 @@ from datetime import datetime
 
 from promptwriter.config import DATA_DIR, HISTORY_DB_PATH
 
+HISTORY_LIST_LIMIT = 200
+
 
 def initialize_history_database():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -71,25 +73,20 @@ def fetch_recent_generations(search_text="", favorites_only=False):
     with closing(sqlite3.connect(HISTORY_DB_PATH)) as connection, connection:
         return connection.execute(
             """
-            WITH recent AS (
-                SELECT id, timestamp, rough_idea, generated_prompt,
-                       is_favorite
-                FROM generations
-                ORDER BY id DESC
-                LIMIT 50
-            )
             SELECT id, timestamp, rough_idea, is_favorite
-            FROM recent
+            FROM generations
             WHERE (? = '' OR rough_idea LIKE ? COLLATE NOCASE
                    OR generated_prompt LIKE ? COLLATE NOCASE)
               AND (? = 0 OR is_favorite = 1)
             ORDER BY id DESC
+            LIMIT ?
             """,
             (
                 search_text,
                 search_pattern,
                 search_pattern,
                 int(favorites_only),
+                HISTORY_LIST_LIMIT,
             ),
         ).fetchall()
 
@@ -106,6 +103,54 @@ def fetch_generation(generation_id):
             """,
             (generation_id,),
         ).fetchone()
+
+
+def delete_generation(generation_id):
+    with closing(
+        sqlite3.connect(HISTORY_DB_PATH, timeout=10)
+    ) as connection, connection:
+        cursor = connection.execute(
+            "DELETE FROM generations WHERE id = ?", (generation_id,)
+        )
+        return cursor.rowcount > 0
+
+
+def _bulk_delete_filter(include_favorites, older_than):
+    clauses = []
+    params = []
+    if not include_favorites:
+        clauses.append("COALESCE(is_favorite, 0) = 0")
+    if older_than is not None:
+        clauses.append("datetime(timestamp) < datetime(?)")
+        params.append(older_than.isoformat(timespec="seconds"))
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    return where, params
+
+
+def count_generations_for_delete(include_favorites=False, older_than=None):
+    where, params = _bulk_delete_filter(include_favorites, older_than)
+    with closing(sqlite3.connect(HISTORY_DB_PATH)) as connection, connection:
+        return connection.execute(
+            f"SELECT COUNT(*) FROM generations {where}", params
+        ).fetchone()[0]
+
+
+def bulk_delete_generations(include_favorites=False, older_than=None):
+    where, params = _bulk_delete_filter(include_favorites, older_than)
+    with closing(
+        sqlite3.connect(HISTORY_DB_PATH, timeout=10)
+    ) as connection, connection:
+        cursor = connection.execute(f"DELETE FROM generations {where}", params)
+        return cursor.rowcount
+
+
+def clear_history():
+    """Delete every history row, creating the database if it does not exist."""
+    initialize_history_database()
+    with closing(
+        sqlite3.connect(HISTORY_DB_PATH, timeout=10)
+    ) as connection, connection:
+        return connection.execute("DELETE FROM generations").rowcount
 
 
 def toggle_favorite(generation_id):

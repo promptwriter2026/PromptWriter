@@ -14,6 +14,7 @@ from tkinterdnd2 import DND_FILES
 from promptwriter.config import (
     LLM_ENGINES,
     LOCAL_ENGINE,
+    MODEL_PLACEHOLDER,
     VISION_SYSTEM_PROMPTS_DIR,
 )
 from promptwriter.services.image_tools import optimize_image_for_api
@@ -45,6 +46,12 @@ class ImagePromptTabMixin:
         tab.grid_columnconfigure(1, weight=1, uniform="image_columns")
         tab.grid_rowconfigure(5, weight=1)
         tab.grid_rowconfigure(9, weight=2, minsize=80)
+        self._image_status_wrap_job = None
+        self._image_status_wrap_width = None
+        self._image_status_wrap_busy = False
+        self._image_lm_wrap_job = None
+        self._image_lm_wrap_width = None
+        self._image_lm_wrap_busy = False
 
         ctk.CTkLabel(tab, text="LLM engine").grid(
             row=0, column=0, padx=12, pady=(10, 4), sticky="w"
@@ -70,7 +77,7 @@ class ImagePromptTabMixin:
         image_api_model_frame.grid_columnconfigure(0, weight=1)
         self.image_api_model_menu = ctk.CTkComboBox(
             image_api_model_frame,
-            values=["Fetch models first"],
+            values=[MODEL_PLACEHOLDER],
             state="readonly",
             command=self._on_image_api_model_changed,
         )
@@ -103,7 +110,7 @@ class ImagePromptTabMixin:
             "Edit sampling settings for the selected model.",
         )
 
-        ctk.CTkLabel(tab, text="Target model").grid(
+        ctk.CTkLabel(tab, text="System prompt").grid(
             row=2, column=0, padx=12, pady=(4, 4), sticky="w"
         )
         self.image_target_model_menu = ctk.CTkOptionMenu(
@@ -114,7 +121,7 @@ class ImagePromptTabMixin:
         )
         self._add_tooltip(
             self.image_target_model_menu,
-            "Select the image generator you are writing this prompt for.",
+            "Choose the system prompt that defines how image prompts are written.",
         )
 
         ctk.CTkLabel(tab, text="Character / LoRA").grid(
@@ -145,6 +152,10 @@ class ImagePromptTabMixin:
         self.image_auto_unload_checkbox.grid(
             row=0, column=0, padx=(0, 8), sticky="w"
         )
+        self._add_tooltip(
+            self.image_auto_unload_checkbox,
+            "Automatically unload the Local model from VRAM after each generation.",
+        )
         self.image_clear_vram_button = ctk.CTkButton(
             image_hardware_frame,
             text="Unload Model",
@@ -152,6 +163,10 @@ class ImagePromptTabMixin:
             command=self._clear_lm_studio_vram,
         )
         self.image_clear_vram_button.grid(row=0, column=1, sticky="w")
+        self._add_tooltip(
+            self.image_clear_vram_button,
+            "Unload the Local model from LM Studio and free VRAM now.",
+        )
         self.image_lm_studio_status_label = ctk.CTkLabel(
             image_hardware_frame,
             text="LM Studio Status: [Checking...]",
@@ -161,6 +176,10 @@ class ImagePromptTabMixin:
         )
         self.image_lm_studio_status_label.grid(
             row=1, column=0, columnspan=2, pady=(2, 0), sticky="ew"
+        )
+        self._add_tooltip(
+            self.image_lm_studio_status_label,
+            "Shows which model is currently loaded in LM Studio.",
         )
         image_hardware_frame.bind(
             "<Configure>", self._update_image_lm_status_wraplength
@@ -178,6 +197,10 @@ class ImagePromptTabMixin:
         for drop_target in (image_frame, self.image_preview_label):
             drop_target.drop_target_register(DND_FILES)
             drop_target.dnd_bind("<<Drop>>", self._handle_image_drop)
+            self._add_tooltip(
+                drop_target,
+                "Drop an image here or use Select Image.",
+            )
         image_frame.bind("<Configure>", self._update_image_preview)
 
         context_frame = ctk.CTkFrame(tab, fg_color="transparent")
@@ -193,7 +216,7 @@ class ImagePromptTabMixin:
         self.image_context_text.grid(row=1, column=0, sticky="nsew")
         self._add_tooltip(
             self.image_context_text,
-            "Type your basic idea or scene description here.",
+            "Add optional context or instructions to steer the image analysis.",
         )
 
         image_actions = ctk.CTkFrame(tab, fg_color="transparent")
@@ -297,6 +320,10 @@ class ImagePromptTabMixin:
             variable=self.force_single_line_var,
         )
         self.image_single_line_checkbox.grid(row=0, column=1, sticky="e")
+        self._add_tooltip(
+            self.image_single_line_checkbox,
+            "Collapse multi-line output into clean single-line prompts.",
+        )
         self.image_output_text = ctk.CTkTextbox(tab, wrap="word")
         self.image_output_text.grid(
             row=9, column=0, columnspan=2, padx=12, pady=(0, 6), sticky="nsew"
@@ -443,15 +470,70 @@ class ImagePromptTabMixin:
         )
         self.image_preview_label.configure(image=self.current_preview_image, text="")
 
+    _WRAP_DEBOUNCE_MS = 30
+    _WRAP_HYSTERESIS_PX = 8
+
     def _update_image_status_wraplength(self, event):
-        wraplength = max(200, event.width - 24)
-        if self.image_status_label.cget("wraplength") != wraplength:
-            self.image_status_label.configure(wraplength=wraplength)
+        width = int(event.width)
+        previous_width = self._image_status_wrap_width
+        if previous_width is not None:
+            if abs(width - previous_width) < self._WRAP_HYSTERESIS_PX:
+                return
+        self._image_status_wrap_width = width
+        if self._image_status_wrap_job is not None:
+            try:
+                self.after_cancel(self._image_status_wrap_job)
+            except (tkinter.TclError, ValueError):
+                pass
+        self._image_status_wrap_job = self.after(
+            self._WRAP_DEBOUNCE_MS,
+            self._apply_image_status_wraplength,
+            max(200, width - 24),
+        )
+
+    def _apply_image_status_wraplength(self, wraplength):
+        self._image_status_wrap_job = None
+        if self._image_status_wrap_busy:
+            return
+        self._image_status_wrap_busy = True
+        try:
+            if self.image_status_label.cget("wraplength") != wraplength:
+                self.image_status_label.configure(wraplength=wraplength)
+        except tkinter.TclError:
+            pass
+        finally:
+            self._image_status_wrap_busy = False
 
     def _update_image_lm_status_wraplength(self, event):
-        wraplength = max(300, event.width - 24)
-        if self.image_lm_studio_status_label.cget("wraplength") != wraplength:
-            self.image_lm_studio_status_label.configure(wraplength=wraplength)
+        width = int(event.width)
+        previous_width = self._image_lm_wrap_width
+        if previous_width is not None:
+            if abs(width - previous_width) < self._WRAP_HYSTERESIS_PX:
+                return
+        self._image_lm_wrap_width = width
+        if self._image_lm_wrap_job is not None:
+            try:
+                self.after_cancel(self._image_lm_wrap_job)
+            except (tkinter.TclError, ValueError):
+                pass
+        self._image_lm_wrap_job = self.after(
+            self._WRAP_DEBOUNCE_MS,
+            self._apply_image_lm_status_wraplength,
+            max(300, width - 24),
+        )
+
+    def _apply_image_lm_status_wraplength(self, wraplength):
+        self._image_lm_wrap_job = None
+        if self._image_lm_wrap_busy:
+            return
+        self._image_lm_wrap_busy = True
+        try:
+            if self.image_lm_studio_status_label.cget("wraplength") != wraplength:
+                self.image_lm_studio_status_label.configure(wraplength=wraplength)
+        except tkinter.TclError:
+            pass
+        finally:
+            self._image_lm_wrap_busy = False
 
     def _generate_image_prompt(self):
         if self.generate_image_prompt_button.cget("state") == "disabled":
@@ -478,7 +560,7 @@ class ImagePromptTabMixin:
                     raise ValueError(
                         f"API Key missing: add and save your {engine} API key in Settings."
                     )
-            if not api_model or api_model == "Fetch models first":
+            if not api_model or api_model == MODEL_PLACEHOLDER:
                 raise ValueError(f"Select an available {engine} API model.")
             rough_idea = self.image_context_text.get("1.0", "end").strip()
             request_parts = assemble_image_request(
