@@ -5,7 +5,8 @@ rough idea into a detailed English prompt, and can analyze a reference image to
 produce an image-generation prompt. It works with Google Gemini, Groq, or a
 local [LM Studio](https://lmstudio.ai/) server.
 
-![PWLP preview](promptwriter/assets/promptwriter_preview.png)
+![PWLP preview](promptwriter/assets/PWLP_main.png)
+![PWLP preview](promptwriter/assets/PWLP_teszt.png)
 
 ## Features
 
