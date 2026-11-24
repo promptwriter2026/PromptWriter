@@ -105,6 +105,12 @@ system prompt folders inside `dist\PWLP\_internal`.
 
 PWLP is 100% free with no limits or paid tiers. Supporting development on Ko-fi is completely voluntary and does not unlock any extra features or perks — if it is useful to you, you can support the project here: https://ko-fi.com/promptwriter
 
+## Troubleshooting & Support Policy
+
+PWLP is a personal hobby project. I am not a professional developer and cannot provide individual technical support, installation help, or bug fixes.
+
+If you run into any installation issues or errors, please ask an AI assistant (like ChatGPT, Gemini, or Claude) — they're much better at troubleshooting than I am!
+
 ## License and disclaimer
 
 PWLP is released under the [MIT License](LICENSE) and is distributed **as-is**,
